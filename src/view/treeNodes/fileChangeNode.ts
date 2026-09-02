@@ -223,7 +223,15 @@ export class FileChangeNode extends TreeNode implements vscode.TreeItem {
 	}
 
 	async openDiff(folderManager: FolderRepositoryManager, opts?: vscode.TextDocumentShowOptions): Promise<void> {
-		const command = await openDiffCommand(
+		const command = await this.getOpenDiffCommand(folderManager, opts);
+		return vscode.commands.executeCommand(command.command, ...(command.arguments ?? []));
+	}
+
+	async getOpenDiffCommand(
+		folderManager: FolderRepositoryManager = this.pullRequestManager,
+		opts?: vscode.TextDocumentShowOptions,
+	): Promise<vscode.Command> {
+		return openDiffCommand(
 			folderManager,
 			this.changeModel.parentFilePath,
 			this.changeModel.filePath,
@@ -233,7 +241,6 @@ export class FileChangeNode extends TreeNode implements vscode.TreeItem {
 			},
 			this.changeModel.status,
 		);
-		return vscode.commands.executeCommand(command.command, ...(command.arguments ?? []));
 	}
 }
 

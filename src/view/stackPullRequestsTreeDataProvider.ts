@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { PrsTreeModel } from './prsTreeModel';
 import { StackPullRequestResolver } from './stackPullRequestResolver';
 import { Disposable, disposeAll } from '../common/lifecycle';
+import { GitChangeType } from '../common/file';
 import Logger from '../common/logger';
 import { RepositoriesManager } from '../github/repositoriesManager';
 import { NotificationsManager } from '../notifications/notificationsManager';
@@ -127,7 +128,9 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		}
 
 		await element.resolve();
-		const diffCommand = element.command;
+		const diffCommand = element instanceof InMemFileChangeNode && element.status === GitChangeType.ADD
+			? await element.getOpenDiffCommand()
+			: element.command;
 		if (!diffCommand) {
 			Logger.error(`No diff command for PR #${element.pullRequest.number} file ${element.changeModel.fileName}`, StackPullRequestsTreeDataProvider.ID);
 			return element.getTreeItem();
