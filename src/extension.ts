@@ -182,7 +182,7 @@ async function init(
 	const notificationsManager = new NotificationsManager(notificationsProvider, credentialStore, reposManager, context);
 	context.subscriptions.push(notificationsManager);
 
-	const stackPullRequestsTree = new StackPullRequestsTreeDataProvider(reposManager, prsTreeModel, notificationsManager);
+	const stackPullRequestsTree = new StackPullRequestsTreeDataProvider(context, reposManager, prsTreeModel, notificationsManager);
 	context.subscriptions.push(stackPullRequestsTree);
 
 	const reviewsManager = new ReviewsManager(context, reposManager, reviewManagers, prsTreeModel, tree, changesTree, telemetry, credentialStore, git, copilotRemoteAgentManager, notificationsManager);

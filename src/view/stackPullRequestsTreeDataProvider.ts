@@ -5,17 +5,31 @@
 
 import * as vscode from 'vscode';
 import { PrsTreeModel } from './prsTreeModel';
-import { StackPullRequestGraphNode, StackPullRequestResolver } from './stackPullRequestResolver';
+import { StackPullRequestResolver } from './stackPullRequestResolver';
 import { Disposable, disposeAll } from '../common/lifecycle';
 import Logger from '../common/logger';
 import { RepositoriesManager } from '../github/repositoriesManager';
 import { NotificationsManager } from '../notifications/notificationsManager';
 import { InMemFileChangeNode, RemoteFileChangeNode } from './treeNodes/fileChangeNode';
-import { StackPullRequestNode } from './treeNodes/stackPullRequestNode';
+import { StackPullRequestEntry, StackPullRequestEntryKind, StackPullRequestEntryNode } from './treeNodes/stackPullRequestNode';
 import { BaseTreeNode, LabelOnlyNode, TreeNode } from './treeNodes/treeNode';
+import { FolderRepositoryManager } from '../github/folderRepositoryManager';
+import { GitHubRepository } from '../github/githubRepository';
+
+interface ParsedPullRequestInput {
+	owner?: string;
+	repositoryName?: string;
+	pullRequestNumber: number;
+}
+
+interface AvailableRepository {
+	folderManager: FolderRepositoryManager;
+	githubRepository: GitHubRepository;
+}
 
 export class StackPullRequestsTreeDataProvider extends Disposable implements vscode.TreeDataProvider<TreeNode>, BaseTreeNode {
 	private static readonly ID = 'StackPullRequestsTree';
+	private static readonly STORAGE_KEY = 'stackPullRequests.entries';
 	private static readonly OPEN_FILE_DIFF_COMMAND = 'stackPr.openFileDiff';
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | void>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -23,9 +37,10 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	private _children: TreeNode[] = [];
 	private _loadPromise: Promise<TreeNode[]> | undefined;
 	private _generation = 0;
-	private readonly _folderListeners = new Map<string, vscode.Disposable>();
+	private _storageSnapshot = '';
 
 	constructor(
+		private readonly _context: vscode.ExtensionContext,
 		private readonly _reposManager: RepositoriesManager,
 		private readonly _prsTreeModel: PrsTreeModel,
 		private readonly _notificationsManager: NotificationsManager,
@@ -38,15 +53,23 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		}));
 		this._register(this._onDidChangeTreeData);
 		this._register(vscode.commands.registerCommand('stackPr.refresh', () => this.refresh()));
+		this._register(vscode.commands.registerCommand('stackPr.add', () => this.addEntry()));
+		this._register(vscode.commands.registerCommand('stackPr.refreshEntry', (node: StackPullRequestEntryNode) => this.refreshEntry(node)));
+		this._register(vscode.commands.registerCommand('stackPr.removeEntry', (node: StackPullRequestEntryNode) => this.removeEntry(node)));
 		this._register(vscode.commands.registerCommand(
 			StackPullRequestsTreeDataProvider.OPEN_FILE_DIFF_COMMAND,
 			(prNumber: number, fileName: string, command: vscode.Command) => this.openFileDiff(prNumber, fileName, command),
 		));
 		this._register(this._reposManager.onDidChangeFolderRepositories(() => {
-			this.registerFolderListeners();
 			this.refresh();
 		}));
-		this.registerFolderListeners();
+		this._register(this._reposManager.onDidChangeAnyGitHubRepository(() => this.refresh()));
+		this._register(vscode.window.onDidChangeWindowState(e => {
+			if (e.focused) {
+				this.refreshIfStorageChanged();
+			}
+		}));
+		this._storageSnapshot = this.serializeEntries(this.getStoredEntries());
 	}
 
 	get view(): vscode.TreeView<TreeNode> {
@@ -55,23 +78,6 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 
 	get children(): readonly TreeNode[] {
 		return this._children;
-	}
-
-	private registerFolderListeners(): void {
-		const activeRoots = new Set(this._reposManager.folderManagers.map(manager => manager.repository.rootUri.toString()));
-		for (const [root, listener] of this._folderListeners) {
-			if (!activeRoots.has(root)) {
-				listener.dispose();
-				this._folderListeners.delete(root);
-			}
-		}
-
-		for (const manager of this._reposManager.folderManagers) {
-			const root = manager.repository.rootUri.toString();
-			if (!this._folderListeners.has(root)) {
-				this._folderListeners.set(root, manager.onDidChangeActivePullRequest(() => this.refresh()));
-			}
-		}
 	}
 
 	refresh(treeNode?: TreeNode): void {
@@ -145,51 +151,260 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 
 	private async loadRoot(): Promise<TreeNode[]> {
 		const generation = this._generation;
-		const folderManager = this._reposManager.folderManagers.find(manager => !!manager.activePullRequest);
-		if (!folderManager?.activePullRequest) {
-			return this.setChildren(generation, [new LabelOnlyNode(this, vscode.l10n.t('No active pull request.'))]);
+		const entries = this.getStoredEntries();
+		this._storageSnapshot = this.serializeEntries(entries);
+		if (entries.length === 0) {
+			return this.setChildren(generation, [new LabelOnlyNode(this, vscode.l10n.t('No pull requests or stacks added. Use + to add one.'))]);
 		}
 
 		try {
-			const stack = await this._resolver.resolve(folderManager.activePullRequest);
-			if (!stack || stack.size < 2) {
-				return this.setChildren(generation, [new LabelOnlyNode(this, vscode.l10n.t('The active pull request is not part of a stack.'))]);
+			const entryNodes = entries.flatMap(entry => {
+				const repository = this.findRepository(entry.owner, entry.repositoryName);
+				if (!repository) {
+					return [];
+				}
+				return [new StackPullRequestEntryNode(
+					this,
+					entry,
+					repository.folderManager,
+					repository.githubRepository,
+					this._resolver,
+					this._notificationsManager,
+					this._prsTreeModel,
+				)];
+			});
+			if (entryNodes.length === 0) {
+				return this.setChildren(generation, [new LabelOnlyNode(this, vscode.l10n.t('No saved pull requests match a repository in this window.'))]);
 			}
-
-			const pullRequests = this.flattenStack(stack.root);
-			Logger.appendLine(
-				`Displaying active PR #${folderManager.activePullRequest.number} stack as siblings: ${pullRequests.map(node => `#${node.pullRequest.number}`).join(', ')}`,
-				StackPullRequestsTreeDataProvider.ID,
-			);
-			const pullRequestNodes = pullRequests.map(node => new StackPullRequestNode(
-				this,
-				node,
-				folderManager,
-				this._notificationsManager,
-				this._prsTreeModel,
-			));
 			if (generation !== this._generation) {
-				disposeAll(pullRequestNodes);
+				disposeAll(entryNodes);
 				return this._children;
 			}
 
 			Logger.appendLine(
-				`Preloading files for ${pullRequestNodes.length} stack pull requests`,
+				`Preloading ${entryNodes.length} saved pull request entries`,
 				StackPullRequestsTreeDataProvider.ID,
 			);
-			await Promise.all(pullRequestNodes.map(node => node.preload()));
+			await Promise.all(entryNodes.map(node => node.preload()));
 			Logger.appendLine(
-				`Finished preloading files for ${pullRequestNodes.length} stack pull requests`,
+				`Finished preloading ${entryNodes.length} saved pull request entries`,
 				StackPullRequestsTreeDataProvider.ID,
 			);
-			return this.setChildren(generation, pullRequestNodes);
+			return this.setChildren(generation, entryNodes);
 		} catch (e) {
-			return this.setChildren(generation, [new LabelOnlyNode(this, vscode.l10n.t('Failed to load stacked pull requests: {0}', e instanceof Error ? e.message : String(e)))]);
+			return this.setChildren(generation, [new LabelOnlyNode(this, vscode.l10n.t('Failed to load saved pull requests: {0}', e instanceof Error ? e.message : String(e)))]);
 		}
 	}
 
-	private flattenStack(node: StackPullRequestGraphNode): StackPullRequestGraphNode[] {
-		return [node, ...node.children.flatMap(child => this.flattenStack(child))];
+	private async addEntry(): Promise<void> {
+		const selected = await vscode.window.showQuickPick([
+			{
+				label: vscode.l10n.t('Pull Request'),
+				description: vscode.l10n.t('Add only one pull request'),
+				entryKind: 'pullRequest' as const,
+			},
+			{
+				label: vscode.l10n.t('Stack'),
+				description: vscode.l10n.t('Discover and add the entire open stack'),
+				entryKind: 'stack' as const,
+			},
+		], {
+			placeHolder: vscode.l10n.t('What would you like to add?'),
+		});
+		if (!selected) {
+			return;
+		}
+
+		const input = await vscode.window.showInputBox({
+			prompt: vscode.l10n.t('Enter a pull request URL, owner/repository#number, or pull request number'),
+			placeHolder: 'https://github.com/owner/repository/pull/123',
+			ignoreFocusOut: true,
+			validateInput: value => this.parsePullRequestInput(value)
+				? undefined
+				: vscode.l10n.t('Enter a valid pull request URL or number.'),
+		});
+		if (!input) {
+			return;
+		}
+
+		const parsed = this.parsePullRequestInput(input)!;
+		const repository = await this.resolveInputRepository(parsed);
+		if (!repository) {
+			return;
+		}
+
+		await vscode.window.withProgress({
+			location: vscode.ProgressLocation.Window,
+			title: selected.entryKind === 'stack'
+				? vscode.l10n.t('Adding pull request stack...')
+				: vscode.l10n.t('Adding pull request...'),
+		}, async () => this.validateAndStoreEntry(selected.entryKind, parsed.pullRequestNumber, repository));
+	}
+
+	private async validateAndStoreEntry(
+		kind: StackPullRequestEntryKind,
+		pullRequestNumber: number,
+		repository: AvailableRepository,
+	): Promise<void> {
+		try {
+			const pullRequest = await repository.githubRepository.getPullRequest(
+				pullRequestNumber,
+				StackPullRequestsTreeDataProvider.ID,
+			);
+			if (!pullRequest?.isResolved()) {
+				throw new Error(vscode.l10n.t('Pull request not found.'));
+			}
+
+			if (kind === 'stack') {
+				const stack = await this._resolver.resolve(pullRequest);
+				if (!stack || stack.size < 2) {
+					throw new Error(vscode.l10n.t('The pull request is not part of an open stack.'));
+				}
+			}
+
+			const entry: StackPullRequestEntry = {
+				kind,
+				owner: repository.githubRepository.remote.owner,
+				repositoryName: repository.githubRepository.remote.repositoryName,
+				pullRequestNumber: pullRequest.number,
+			};
+			const entries = this.getStoredEntries();
+			if (entries.some(existing => this.entryKey(existing) === this.entryKey(entry))) {
+				vscode.window.showInformationMessage(vscode.l10n.t('That pull request or stack is already in this view.'));
+				return;
+			}
+
+			entries.push(entry);
+			await this.storeEntries(entries);
+			this.refresh();
+		} catch (e) {
+			const message = e instanceof Error ? e.message : String(e);
+			Logger.error(`Adding pull request entry failed: ${message}`, StackPullRequestsTreeDataProvider.ID);
+			vscode.window.showErrorMessage(vscode.l10n.t('Failed to add pull request: {0}', message));
+		}
+	}
+
+	private async refreshEntry(node: StackPullRequestEntryNode | undefined): Promise<void> {
+		if (!node) {
+			return;
+		}
+		await node.reload();
+		this._onDidChangeTreeData.fire(node);
+	}
+
+	private async removeEntry(node: StackPullRequestEntryNode | undefined): Promise<void> {
+		if (!node) {
+			return;
+		}
+		const key = this.entryKey(node.entry);
+		await this.storeEntries(this.getStoredEntries().filter(entry => this.entryKey(entry) !== key));
+		this.refresh();
+	}
+
+	private parsePullRequestInput(value: string): ParsedPullRequestInput | undefined {
+		const input = value.trim();
+		let match = /^https?:\/\/[^/]+\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:[/?#].*)?$/i.exec(input);
+		if (match) {
+			return { owner: match[1], repositoryName: match[2], pullRequestNumber: Number(match[3]) };
+		}
+		match = /^([^/\s]+)\/([^/#\s]+)#(\d+)$/.exec(input);
+		if (match) {
+			return { owner: match[1], repositoryName: match[2], pullRequestNumber: Number(match[3]) };
+		}
+		match = /^#?(\d+)$/.exec(input);
+		if (match) {
+			return { pullRequestNumber: Number(match[1]) };
+		}
+		return undefined;
+	}
+
+	private async resolveInputRepository(parsed: ParsedPullRequestInput): Promise<AvailableRepository | undefined> {
+		const repositories = this.getAvailableRepositories();
+		if (parsed.owner && parsed.repositoryName) {
+			const repository = repositories.find(candidate =>
+				candidate.githubRepository.remote.owner.toLowerCase() === parsed.owner!.toLowerCase()
+				&& candidate.githubRepository.remote.repositoryName.toLowerCase() === parsed.repositoryName!.toLowerCase(),
+			);
+			if (!repository) {
+				vscode.window.showErrorMessage(vscode.l10n.t('Open a checkout of {0}/{1} before adding this pull request.', parsed.owner, parsed.repositoryName));
+			}
+			return repository;
+		}
+
+		if (repositories.length === 0) {
+			vscode.window.showErrorMessage(vscode.l10n.t('No GitHub repository is available in this window.'));
+			return undefined;
+		}
+		if (repositories.length === 1) {
+			return repositories[0];
+		}
+
+		return (await vscode.window.showQuickPick(repositories.map(repository => ({
+			label: `${repository.githubRepository.remote.owner}/${repository.githubRepository.remote.repositoryName}`,
+			description: repository.folderManager.repository.rootUri.fsPath,
+			repository,
+		})), {
+			placeHolder: vscode.l10n.t('Choose the repository containing the pull request'),
+		}))?.repository;
+	}
+
+	private getAvailableRepositories(): AvailableRepository[] {
+		const repositories = new Map<string, AvailableRepository>();
+		for (const folderManager of this._reposManager.folderManagers) {
+			for (const githubRepository of folderManager.gitHubRepositories) {
+				const key = `${githubRepository.remote.owner}/${githubRepository.remote.repositoryName}`.toLowerCase();
+				if (!repositories.has(key)) {
+					repositories.set(key, { folderManager, githubRepository });
+				}
+			}
+		}
+		return Array.from(repositories.values());
+	}
+
+	private findRepository(owner: string, repositoryName: string): AvailableRepository | undefined {
+		return this.getAvailableRepositories().find(repository =>
+			repository.githubRepository.remote.owner.toLowerCase() === owner.toLowerCase()
+			&& repository.githubRepository.remote.repositoryName.toLowerCase() === repositoryName.toLowerCase(),
+		);
+	}
+
+	private getStoredEntries(): StackPullRequestEntry[] {
+		const entries = this._context.globalState.get<unknown>(StackPullRequestsTreeDataProvider.STORAGE_KEY, []);
+		if (!Array.isArray(entries)) {
+			return [];
+		}
+		return entries.filter((entry): entry is StackPullRequestEntry => {
+			if (!entry || typeof entry !== 'object') {
+				return false;
+			}
+			const candidate = entry as Partial<StackPullRequestEntry>;
+			return (candidate.kind === 'pullRequest' || candidate.kind === 'stack')
+				&& typeof candidate.owner === 'string'
+				&& typeof candidate.repositoryName === 'string'
+				&& typeof candidate.pullRequestNumber === 'number'
+				&& Number.isInteger(candidate.pullRequestNumber)
+				&& candidate.pullRequestNumber > 0;
+		});
+	}
+
+	private async storeEntries(entries: StackPullRequestEntry[]): Promise<void> {
+		await this._context.globalState.update(StackPullRequestsTreeDataProvider.STORAGE_KEY, entries);
+		this._storageSnapshot = this.serializeEntries(entries);
+	}
+
+	private refreshIfStorageChanged(): void {
+		const snapshot = this.serializeEntries(this.getStoredEntries());
+		if (snapshot !== this._storageSnapshot) {
+			this.refresh();
+		}
+	}
+
+	private serializeEntries(entries: StackPullRequestEntry[]): string {
+		return JSON.stringify(entries);
+	}
+
+	private entryKey(entry: StackPullRequestEntry): string {
+		return `${entry.kind}:${entry.owner}/${entry.repositoryName}#${entry.pullRequestNumber}`.toLowerCase();
 	}
 
 	private setChildren(generation: number, children: TreeNode[]): TreeNode[] {
@@ -202,8 +417,6 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	}
 
 	override dispose(): void {
-		disposeAll(Array.from(this._folderListeners.values()));
-		this._folderListeners.clear();
 		disposeAll(this._children);
 		super.dispose();
 	}

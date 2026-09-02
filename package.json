@@ -1228,9 +1228,27 @@
 				"category": "%command.pull.request.category%"
 			},
 			{
+				"command": "stackPr.add",
+				"title": "%command.stackPr.add.title%",
+				"icon": "$(add)",
+				"category": "%command.pull.request.category%"
+			},
+			{
 				"command": "stackPr.refresh",
 				"title": "%command.stackPr.refresh.title%",
 				"icon": "$(refresh)",
+				"category": "%command.pull.request.category%"
+			},
+			{
+				"command": "stackPr.refreshEntry",
+				"title": "%command.stackPr.refreshEntry.title%",
+				"icon": "$(refresh)",
+				"category": "%command.pull.request.category%"
+			},
+			{
+				"command": "stackPr.removeEntry",
+				"title": "%command.stackPr.removeEntry.title%",
+				"icon": "$(trash)",
 				"category": "%command.pull.request.category%"
 			},
 			{
@@ -2844,9 +2862,14 @@
 					"group": "navigation@2"
 				},
 				{
+					"command": "stackPr.add",
+					"when": "github:initialized && view == stackPr:github",
+					"group": "navigation@1"
+				},
+				{
 					"command": "stackPr.refresh",
 					"when": "github:initialized && view == stackPr:github",
-					"group": "navigation"
+					"group": "navigation@2"
 				},
 				{
 					"command": "pr.openPullsWebsite",
@@ -2990,6 +3013,26 @@
 				}
 			],
 			"view/item/context": [
+				{
+					"command": "stackPr.refreshEntry",
+					"when": "view == stackPr:github && viewItem == stack-pull-request-entry",
+					"group": "inline@1"
+				},
+				{
+					"command": "stackPr.removeEntry",
+					"when": "view == stackPr:github && viewItem == stack-pull-request-entry",
+					"group": "inline@2"
+				},
+				{
+					"command": "stackPr.refreshEntry",
+					"when": "view == stackPr:github && viewItem == stack-pull-request-entry",
+					"group": "1_stack@1"
+				},
+				{
+					"command": "stackPr.removeEntry",
+					"when": "view == stackPr:github && viewItem == stack-pull-request-entry",
+					"group": "1_stack@2"
+				},
 				{
 					"command": "pr.pick",
 					"when": "(view == pr:github && viewItem =~ /(pullrequest(:local)?:nonactive)/) && !isSessionsWindow",
