@@ -5,6 +5,22 @@
 >
 > This build intentionally keeps the upstream extension ID, `GitHub.vscode-pull-request-github`. Installing its VSIX **replaces the official GitHub Pull Requests extension** in the current VS Code profile. The two builds cannot be installed side by side.
 
+## Why This Fork Keeps the Official Extension ID
+
+The upstream extension uses several [VS Code proposed APIs](https://code.visualstudio.com/api/advanced-topics/using-proposed-api) for its integrated diff and commenting experience. Proposed APIs are experimental and are enabled for specific extension identities. A build with a new publisher or extension ID does not inherit the permissions granted to the official GitHub Pull Requests extension in normal VS Code installations.
+
+Keeping `GitHub.vscode-pull-request-github` allows this patch build to retain the upstream review behavior without requiring every user to run VS Code Insiders with a custom `--enable-proposed-api` argument.
+
+This is a technical compatibility choice only. It does **not** mean that this fork is an official GitHub release or that the use of the upstream ID is endorsed by GitHub or Microsoft.
+
+The consequences are important:
+
+- Installing this VSIX replaces the Marketplace build of GitHub Pull Requests.
+- Existing settings and authentication continue to use the upstream extension identity.
+- A later Marketplace update may replace this fork with an official release.
+- Reinstalling the official extension replaces this fork and removes the Stack Pull Requests view.
+- Only install a VSIX obtained from a source and release that you trust.
+
 This fork preserves the upstream pull request and issue functionality and adds a dedicated **Stack Pull Requests** experience for reviewing every pull request in a stack from one VS Code view.
 
 ## What This Fork Adds
@@ -53,22 +69,6 @@ Use the refresh button to reload all saved entries, or the inline refresh action
 ### Persistent entries across windows
 
 Added pull requests and stacks are stored globally for this extension installation. The same saved list is available in other VS Code windows, while each window displays only entries that match one of its local Git remotes. Changes made in another window are detected when a window regains focus.
-
-## Why This Fork Keeps the Official Extension ID
-
-The upstream extension uses several [VS Code proposed APIs](https://code.visualstudio.com/api/advanced-topics/using-proposed-api) for its integrated diff and commenting experience. Proposed APIs are experimental and are enabled for specific extension identities. A build with a new publisher or extension ID does not inherit the permissions granted to the official GitHub Pull Requests extension in normal VS Code installations.
-
-Keeping `GitHub.vscode-pull-request-github` allows this patch build to retain the upstream review behavior without requiring every user to run VS Code Insiders with a custom `--enable-proposed-api` argument.
-
-This is a technical compatibility choice only. It does **not** mean that this fork is an official GitHub release or that the use of the upstream ID is endorsed by GitHub or Microsoft.
-
-The consequences are important:
-
-- Installing this VSIX replaces the Marketplace build of GitHub Pull Requests.
-- Existing settings and authentication continue to use the upstream extension identity.
-- A later Marketplace update may replace this fork with an official release.
-- Reinstalling the official extension replaces this fork and removes the Stack Pull Requests view.
-- Only install a VSIX obtained from a source and release that you trust.
 
 ## Installation
 
