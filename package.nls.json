@@ -201,6 +201,7 @@
 	"githubIssues.alwaysPromptForNewIssueRepo.description": "Enabling will always prompt which repository to create an issue in instead of basing off the current open file.",
 	"view.github.pull.requests.name": "GitHub",
 	"view.github.pull.request.name": "GitHub Pull Request",
+	"view.github.stack.pull.requests.name": "Stack Pull Requests",
 	"view.github.login.name": "Login",
 	"view.pr.github.name": "Pull Requests",
 	"view.pr.github.accessibilityHelpContent": {
@@ -261,6 +262,7 @@
 	"command.review.createSuggestionFromChange.title": "Convert to Pull Request Suggestion",
 	"command.review.copyPrLink.title": "Copy Pull Request Link",
 	"command.pr.refreshList.title": "Refresh Pull Requests List",
+	"command.stackPr.refresh.title": "Refresh Stack Pull Requests",
 	"command.pr.setFileListLayoutAsTree.title": "View as Tree",
 	"command.pr.setFileListLayoutAsFlat.title": "View as List",
 	"command.pr.toggleHideViewedFiles.title": "Toggle Hide Viewed Files",

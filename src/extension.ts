@@ -56,6 +56,7 @@ import { PullRequestsTreeDataProvider } from './view/prsTreeDataProvider';
 import { PrsTreeModel } from './view/prsTreeModel';
 import { ReviewManager, ShowPullRequest } from './view/reviewManager';
 import { ReviewsManager } from './view/reviewsManager';
+import { StackPullRequestsTreeDataProvider } from './view/stackPullRequestsTreeDataProvider';
 import { TreeDecorationProviders } from './view/treeDecorationProviders';
 import { WebviewViewCoordinator } from './view/webviewViewCoordinator';
 
@@ -181,6 +182,9 @@ async function init(
 	const notificationsManager = new NotificationsManager(notificationsProvider, credentialStore, reposManager, context);
 	context.subscriptions.push(notificationsManager);
 
+	const stackPullRequestsTree = new StackPullRequestsTreeDataProvider(reposManager, prsTreeModel, notificationsManager);
+	context.subscriptions.push(stackPullRequestsTree);
+
 	const reviewsManager = new ReviewsManager(context, reposManager, reviewManagers, prsTreeModel, tree, changesTree, telemetry, credentialStore, git, copilotRemoteAgentManager, notificationsManager);
 	context.subscriptions.push(reviewsManager);
 
@@ -275,6 +279,7 @@ async function init(
 		await reposManager.refreshRepositories();
 		await Promise.all(reviewsManager.reviewManagers.map(reviewManager => reviewManager.updateState(true)));
 		tree.refreshAll(true);
+		stackPullRequestsTree.refresh();
 		await issueStateManager.refreshForAuthChange();
 		notificationsManager.refresh();
 	}));

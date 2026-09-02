@@ -219,6 +219,7 @@ fragment PullRequestFragment on PullRequest {
 	headRefOid
 	headRepository {
 		isInOrganization
+		name
 		owner {
 			login
 		}
@@ -231,6 +232,7 @@ fragment PullRequestFragment on PullRequest {
 	baseRefOid
 	baseRepository {
 		isInOrganization
+		name
 		owner {
 			login
 		}

@@ -661,6 +661,7 @@ export interface ListBranchesResponse {
 
 export interface RefRepository {
 	isInOrganization: boolean;
+	name?: string;
 	owner: {
 		login: string;
 	};

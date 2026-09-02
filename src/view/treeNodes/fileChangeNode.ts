@@ -253,19 +253,37 @@ export class RemoteFileChangeNode extends FileChangeNode implements vscode.TreeI
 		parent: TreeNodeParent,
 		folderRepositoryManager: FolderRepositoryManager,
 		pullRequest: PullRequestModel & IResolvedPullRequestModel,
-		changeModel: RemoteFileChangeModel
+		changeModel: RemoteFileChangeModel,
+		private readonly openInEditor = false,
 	) {
 		super(parent, folderRepositoryManager, pullRequest, changeModel);
 		this.fileChangeResourceUri = toResourceUri(vscode.Uri.parse(changeModel.blobUrl!), changeModel.pullRequest.number, changeModel.fileName, changeModel.status, changeModel.previousFileName);
-		this.command = {
-			command: 'pr.openFileOnGitHub',
-			title: 'Open File on GitHub',
-			arguments: [this],
-		};
+		if (!openInEditor) {
+			this.command = {
+				command: 'pr.openFileOnGitHub',
+				title: 'Open File on GitHub',
+				arguments: [this],
+			};
+		}
+	}
+
+	async resolve(): Promise<void> {
+		if (this.openInEditor) {
+			this.command = await openDiffCommand(
+				this.pullRequestManager,
+				this.changeModel.parentFilePath,
+				this.changeModel.filePath,
+				this.opts,
+				this.changeModel.status,
+			);
+		}
 	}
 
 	override async openDiff(): Promise<void> {
-		return vscode.commands.executeCommand(this.command.command);
+		if (!this.command) {
+			await this.resolve();
+		}
+		return vscode.commands.executeCommand(this.command.command, ...(this.command.arguments ?? []));
 	}
 
 	override openFileCommand(): vscode.Command {

@@ -725,6 +725,42 @@ export class GitHubRepository extends Disposable {
 		return undefined;
 	}
 
+	async getOpenPullRequestsForBase(branch: string): Promise<PullRequestModel[]> {
+		let remote: GitHubRemote | undefined;
+		try {
+			Logger.debug(`Fetch open pull requests for base branch ${branch} - enter`, this.id);
+			const ensured = await this.ensure();
+			remote = ensured.remote;
+			const pullRequests = await restPaginate<
+				typeof ensured.octokit.api.pulls.list,
+				OctokitCommon.PullsListResponseItem
+			>(ensured.octokit.api.pulls.list, {
+				owner: remote.owner,
+				repo: remote.repositoryName,
+				base: branch,
+				state: 'open',
+			});
+
+			const models = pullRequests
+				.filter(pullRequest => !!pullRequest.head.repo)
+				.map(pullRequest => this.createOrUpdatePullRequestModel(
+					convertRESTPullRequestToRawPullRequest(pullRequest, this),
+				));
+			Logger.debug(`Fetch open pull requests for base branch ${branch} - done`, this.id);
+			return models;
+		} catch (e) {
+			Logger.error(`Fetching open pull requests for base branch ${branch} failed: ${e}`, this.id);
+			if (e.status === 404) {
+				vscode.window.showWarningMessage(
+					`Fetching pull requests for remote '${remote?.remoteName}' failed, please check if the repository ${remote?.owner}/${remote?.repositoryName} is valid.`,
+				);
+			} else {
+				throw e;
+			}
+		}
+		return [];
+	}
+
 	async getPullRequestNumbers(): Promise<PullRequestNumberData[] | undefined> {
 		let remote: GitHubRemote | undefined;
 		try {

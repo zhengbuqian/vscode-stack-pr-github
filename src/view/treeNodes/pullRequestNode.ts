@@ -25,6 +25,10 @@ import { TreeNode, TreeNodeParent } from './treeNode';
 import { NotificationsManager } from '../../notifications/notificationsManager';
 import { PrsTreeModel } from '../prsTreeModel';
 
+export interface PRNodeOptions {
+	forceRemote?: boolean;
+}
+
 export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 {
 	static ID = 'PRNode';
 
@@ -54,6 +58,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 		private _isLocal: boolean,
 		private _notificationProvider: NotificationsManager,
 		private _prsTreeModel: PrsTreeModel,
+		private readonly _options: PRNodeOptions = {},
 	) {
 		super(parent);
 		this.registerSinceReviewChange();
@@ -184,7 +189,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 
 	private async resolvePRCommentController(): Promise<void> {
 		// If the current branch is this PR's branch, then we can rely on the review comment controller instead.
-		if (this.pullRequestModel.equals(this._folderReposManager.activePullRequest)) {
+		if (!this._options.forceRemote && this.pullRequestModel.equals(this._folderReposManager.activePullRequest)) {
 			return;
 		}
 
@@ -233,7 +238,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 		// If this PR is the the current PR, then we should be careful to use
 		// URIs that will cause the review comment controller to be used.
 		const rawChanges: (SlimFileChange | InMemFileChange)[] = [];
-		const isCurrentPR = this.pullRequestModel.equals(this._folderReposManager.activePullRequest);
+		const isCurrentPR = !this._options.forceRemote && this.pullRequestModel.equals(this._folderReposManager.activePullRequest);
 		if (isCurrentPR && (this._folderReposManager.activePullRequest !== undefined) && (this._folderReposManager.activePullRequest.fileChanges.size > 0)) {
 			this.pullRequestModel = this._folderReposManager.activePullRequest;
 			rawChanges.push(...this._folderReposManager.activePullRequest.fileChanges.values());
@@ -254,7 +259,8 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 					this,
 					this._folderReposManager,
 					this.pullRequestModel as (PullRequestModel & IResolvedPullRequestModel),
-					changeModel
+					changeModel,
+					!!this._options.forceRemote,
 				);
 			}
 

@@ -921,6 +921,11 @@
 					"id": "github-pull-request",
 					"title": "%view.github.pull.request.name%",
 					"icon": "$(git-pull-request)"
+				},
+				{
+					"id": "github-stack-pull-requests",
+					"title": "%view.github.stack.pull.requests.name%",
+					"icon": "$(layers)"
 				}
 			]
 		},
@@ -1008,6 +1013,14 @@
 					"name": "%view.github.active.pull.request.welcome.name%",
 					"when": "(!github:stateValidated && github:focusedReview) && !isSessionsWindow",
 					"icon": "$(git-pull-request)"
+				}
+			],
+			"github-stack-pull-requests": [
+				{
+					"id": "stackPr:github",
+					"name": "%view.github.stack.pull.requests.name%",
+					"when": "ReposManagerStateContext != NeedsAuthentication",
+					"icon": "$(layers)"
 				}
 			]
 		},
@@ -1211,6 +1224,12 @@
 			{
 				"command": "pr.refreshList",
 				"title": "%command.pr.refreshList.title%",
+				"icon": "$(refresh)",
+				"category": "%command.pull.request.category%"
+			},
+			{
+				"command": "stackPr.refresh",
+				"title": "%command.stackPr.refresh.title%",
 				"icon": "$(refresh)",
 				"category": "%command.pull.request.category%"
 			},
@@ -2823,6 +2842,11 @@
 					"command": "pr.refreshList",
 					"when": "(gitHubOpenRepositoryCount != 0 && github:initialized && view == pr:github) && !isSessionsWindow",
 					"group": "navigation@2"
+				},
+				{
+					"command": "stackPr.refresh",
+					"when": "github:initialized && view == stackPr:github",
+					"group": "navigation"
 				},
 				{
 					"command": "pr.openPullsWebsite",

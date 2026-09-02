@@ -690,7 +690,7 @@ function parseRef(refName: string, oid: string, repository?: GraphQL.RefReposito
 			cloneUrl: repository.url,
 			isInOrganization: repository.isInOrganization,
 			owner: repository.owner.login,
-			name: refName
+			name: repository.name ?? refName
 		},
 	};
 }
