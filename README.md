@@ -4,6 +4,10 @@
 > This is an **unofficial fork** of [GitHub Pull Requests for Visual Studio Code](https://github.com/microsoft/vscode-pull-request-github). It is not published, maintained, reviewed, or endorsed by GitHub or Microsoft.
 >
 > This build intentionally keeps the upstream extension ID, `GitHub.vscode-pull-request-github`. Installing its VSIX **replaces the official GitHub Pull Requests extension** in the current VS Code profile. The two builds cannot be installed side by side.
+>
+> This build was created for personal use only and is shared because it may also be helpful to some users. It is not a supported product.
+>
+> The Stack Pull Requests changes are entirely vibe-coded. They have not undergone code review or automated testing. The feature may be unstable and may contain serious bugs. Use it at your own risk.
 
 ## Why This Fork Keeps the Official Extension ID
 
@@ -21,7 +25,7 @@ The consequences are important:
 - Reinstalling the official extension replaces this fork and removes the Stack Pull Requests view.
 - Only install a VSIX obtained from a source and release that you trust.
 
-This fork preserves the upstream pull request and issue functionality and adds a dedicated **Stack Pull Requests** experience for reviewing every pull request in a stack from one VS Code view.
+This fork preserves the upstream pull request and issue functionality and adds a dedicated **Stack Pull Requests** experience for reviewing every pull request in a stack from one VS Code view. It implements the proposal filed by this fork's author, [@zhengbuqian](https://github.com/zhengbuqian), in upstream issue [microsoft/vscode-pull-request-github#8887](https://github.com/microsoft/vscode-pull-request-github/issues/8887).
 
 ## What This Fork Adds
 
