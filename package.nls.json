@@ -262,7 +262,7 @@
 	"command.review.createSuggestionFromChange.title": "Convert to Pull Request Suggestion",
 	"command.review.copyPrLink.title": "Copy Pull Request Link",
 	"command.pr.refreshList.title": "Refresh Pull Requests List",
-	"command.stackPr.add.title": "Add Pull Request or Stack",
+	"command.stackPr.add.title": "Add Pull Request",
 	"command.stackPr.refresh.title": "Refresh Stack Pull Requests",
 	"command.stackPr.refreshEntry.title": "Refresh Pull Request or Stack",
 	"command.stackPr.removeEntry.title": "Remove from Stack Pull Requests",

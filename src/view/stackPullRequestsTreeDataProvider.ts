@@ -11,22 +11,27 @@ import Logger from '../common/logger';
 import { RepositoriesManager } from '../github/repositoriesManager';
 import { NotificationsManager } from '../notifications/notificationsManager';
 import { InMemFileChangeNode, RemoteFileChangeNode } from './treeNodes/fileChangeNode';
-import { StackPullRequestEntry, StackPullRequestEntryKind, StackPullRequestEntryNode } from './treeNodes/stackPullRequestNode';
+import { StackPullRequestEntry, StackPullRequestEntryNode } from './treeNodes/stackPullRequestNode';
 import { BaseTreeNode, LabelOnlyNode, TreeNode } from './treeNodes/treeNode';
 import { FolderRepositoryManager } from '../github/folderRepositoryManager';
 import { GitHubRepository } from '../github/githubRepository';
-
-interface ParsedPullRequestInput {
-	owner?: string;
-	repositoryName?: string;
-	pullRequestNumber: number;
-}
 
 interface AvailableRepository {
 	folderManager: FolderRepositoryManager;
 	githubRepository: GitHubRepository;
 	workspaceOwner: string;
 	workspaceRepositoryName: string;
+	workspaceRemoteName: string;
+}
+
+interface RepositorySelection {
+	repository: AvailableRepository;
+	pullRequestNumber?: number;
+}
+
+interface RepositoryQuickPickItem extends vscode.QuickPickItem {
+	repository: AvailableRepository;
+	pullRequestNumber?: number;
 }
 
 export class StackPullRequestsTreeDataProvider extends Disposable implements vscode.TreeDataProvider<TreeNode>, BaseTreeNode {
@@ -200,52 +205,39 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	}
 
 	private async addEntry(): Promise<void> {
-		const selected = await vscode.window.showQuickPick([
-			{
-				label: vscode.l10n.t('Pull Request'),
-				description: vscode.l10n.t('Add only one pull request'),
-				entryKind: 'pullRequest' as const,
-			},
-			{
-				label: vscode.l10n.t('Stack'),
-				description: vscode.l10n.t('Discover and add the entire open stack'),
-				entryKind: 'stack' as const,
-			},
-		], {
-			placeHolder: vscode.l10n.t('What would you like to add?'),
-		});
-		if (!selected) {
+		const selection = await this.pickWorkspaceRepository();
+		if (!selection) {
 			return;
 		}
+		const repository = selection.repository;
+		let pullRequestNumber = selection.pullRequestNumber;
 
-		const input = await vscode.window.showInputBox({
-			prompt: vscode.l10n.t('Enter a pull request URL, owner/repository#number, or pull request number'),
-			placeHolder: 'https://github.com/owner/repository/pull/123',
-			ignoreFocusOut: true,
-			validateInput: value => this.parsePullRequestInput(value)
-				? undefined
-				: vscode.l10n.t('Enter a valid pull request URL or number.'),
-		});
-		if (!input) {
-			return;
-		}
-
-		const parsed = this.parsePullRequestInput(input)!;
-		const repository = await this.resolveInputRepository(parsed);
-		if (!repository) {
-			return;
+		if (pullRequestNumber === undefined) {
+			const input = await vscode.window.showInputBox({
+				prompt: vscode.l10n.t(
+					'Enter a pull request number for {0}/{1}',
+					repository.githubRepository.remote.owner,
+					repository.githubRepository.remote.repositoryName,
+				),
+				placeHolder: '123',
+				ignoreFocusOut: true,
+				validateInput: value => this.parsePullRequestNumber(value)
+					? undefined
+					: vscode.l10n.t('Enter a valid pull request number.'),
+			});
+			if (!input) {
+				return;
+			}
+			pullRequestNumber = this.parsePullRequestNumber(input)!;
 		}
 
 		await vscode.window.withProgress({
 			location: vscode.ProgressLocation.Window,
-			title: selected.entryKind === 'stack'
-				? vscode.l10n.t('Adding pull request stack...')
-				: vscode.l10n.t('Adding pull request...'),
-		}, async () => this.validateAndStoreEntry(selected.entryKind, parsed.pullRequestNumber, repository));
+			title: vscode.l10n.t('Adding pull request...'),
+		}, async () => this.validateAndStoreEntry(pullRequestNumber!, repository));
 	}
 
 	private async validateAndStoreEntry(
-		kind: StackPullRequestEntryKind,
 		pullRequestNumber: number,
 		repository: AvailableRepository,
 	): Promise<void> {
@@ -258,15 +250,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 				throw new Error(vscode.l10n.t('Pull request not found.'));
 			}
 
-			if (kind === 'stack') {
-				const stack = await this._resolver.resolve(pullRequest);
-				if (!stack || stack.size < 2) {
-					throw new Error(vscode.l10n.t('The pull request is not part of an open stack.'));
-				}
-			}
-
 			const entry: StackPullRequestEntry = {
-				kind,
 				workspaceOwner: repository.workspaceOwner,
 				workspaceRepositoryName: repository.workspaceRepositoryName,
 				owner: repository.githubRepository.remote.owner,
@@ -306,119 +290,115 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		this.refresh();
 	}
 
-	private parsePullRequestInput(value: string): ParsedPullRequestInput | undefined {
+	private parsePullRequestNumber(value: string): number | undefined {
 		const input = value.trim();
-		let match = /^https?:\/\/[^/]+\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:[/?#].*)?$/i.exec(input);
-		if (match) {
-			return { owner: match[1], repositoryName: match[2], pullRequestNumber: Number(match[3]) };
-		}
-		match = /^([^/\s]+)\/([^/#\s]+)#(\d+)$/.exec(input);
-		if (match) {
-			return { owner: match[1], repositoryName: match[2], pullRequestNumber: Number(match[3]) };
-		}
-		match = /^#?(\d+)$/.exec(input);
-		if (match) {
-			return { pullRequestNumber: Number(match[1]) };
-		}
-		return undefined;
+		const match = /^#?(\d+)$/.exec(input);
+		const pullRequestNumber = match ? Number(match[1]) : undefined;
+		return pullRequestNumber && Number.isSafeInteger(pullRequestNumber) ? pullRequestNumber : undefined;
 	}
 
-	private async resolveInputRepository(parsed: ParsedPullRequestInput): Promise<AvailableRepository | undefined> {
-		const repositories = this.getAvailableRepositories();
-		if (parsed.owner && parsed.repositoryName) {
-			const existingRepository = repositories.find(candidate =>
-				candidate.githubRepository.remote.owner.toLowerCase() === parsed.owner!.toLowerCase()
-				&& candidate.githubRepository.remote.repositoryName.toLowerCase() === parsed.repositoryName!.toLowerCase(),
-			);
-			if (existingRepository) {
-				return existingRepository;
-			}
-
-			const workspaceRepository = await this.pickWorkspaceRepository();
-			if (!workspaceRepository) {
-				return undefined;
-			}
-			const githubRepository = await workspaceRepository.folderManager.createGitHubRepositoryFromOwnerName(
-				parsed.owner,
-				parsed.repositoryName,
-			);
-			if (!githubRepository) {
-				vscode.window.showErrorMessage(vscode.l10n.t('Unable to access {0}/{1}.', parsed.owner, parsed.repositoryName));
-				return undefined;
-			}
-			return { ...workspaceRepository, githubRepository };
-		}
-
-		if (repositories.length === 0) {
-			vscode.window.showErrorMessage(vscode.l10n.t('No GitHub repository is available in this window.'));
-			return undefined;
-		}
-		if (repositories.length === 1) {
-			return repositories[0];
-		}
-
-		return (await vscode.window.showQuickPick(repositories.map(repository => ({
-			label: `${repository.githubRepository.remote.owner}/${repository.githubRepository.remote.repositoryName}`,
-			description: repository.folderManager.repository.rootUri.fsPath,
-			repository,
-		})), {
-			placeHolder: vscode.l10n.t('Choose the repository containing the pull request'),
-		}))?.repository;
-	}
-
-	private getAvailableRepositories(): AvailableRepository[] {
-		const repositories = new Map<string, AvailableRepository>();
-		for (const folderManager of this._reposManager.folderManagers) {
-			const workspaceRepository = folderManager.gitHubRepositories[0];
-			if (!workspaceRepository) {
-				continue;
-			}
-			for (const githubRepository of folderManager.gitHubRepositories) {
-				const key = `${githubRepository.remote.owner}/${githubRepository.remote.repositoryName}`.toLowerCase();
-				if (!repositories.has(key)) {
-					repositories.set(key, {
-						folderManager,
-						githubRepository,
-						workspaceOwner: workspaceRepository.remote.owner,
-						workspaceRepositoryName: workspaceRepository.remote.repositoryName,
-					});
+	private async getWorkspaceRepositories(): Promise<AvailableRepository[]> {
+		const repositories = await Promise.all(this._reposManager.folderManagers.map(async folderManager => {
+			const remotes = await folderManager.getAllGitHubRemotes();
+			return Promise.all(remotes.map(async remote => {
+				const githubRepository = folderManager.findExistingGitHubRepository({
+					owner: remote.owner,
+					repositoryName: remote.repositoryName,
+					remoteName: remote.remoteName,
+				}) ?? folderManager.findExistingGitHubRepository({
+					owner: remote.owner,
+					repositoryName: remote.repositoryName,
+				}) ?? await folderManager.createGitHubRepositoryFromOwnerName(remote.owner, remote.repositoryName);
+				if (!githubRepository) {
+					return undefined;
 				}
-			}
-		}
-		return Array.from(repositories.values());
+				return {
+					folderManager,
+					githubRepository,
+					workspaceOwner: remote.owner,
+					workspaceRepositoryName: remote.repositoryName,
+					workspaceRemoteName: remote.remoteName,
+				};
+			}));
+		}));
+		return repositories.flat().filter((repository): repository is AvailableRepository => !!repository);
 	}
 
-	private getWorkspaceRepositories(): AvailableRepository[] {
-		return this._reposManager.folderManagers.flatMap(folderManager => {
-			const githubRepository = folderManager.gitHubRepositories[0];
-			if (!githubRepository) {
-				return [];
-			}
-			return [{
-				folderManager,
-				githubRepository,
-				workspaceOwner: githubRepository.remote.owner,
-				workspaceRepositoryName: githubRepository.remote.repositoryName,
-			}];
-		});
-	}
-
-	private async pickWorkspaceRepository(): Promise<AvailableRepository | undefined> {
-		const repositories = this.getWorkspaceRepositories();
+	private async pickWorkspaceRepository(): Promise<RepositorySelection | undefined> {
+		const repositories = await this.getWorkspaceRepositories();
 		if (repositories.length === 0) {
 			vscode.window.showErrorMessage(vscode.l10n.t('No GitHub repository is available in this window.'));
 			return undefined;
 		}
 		if (repositories.length === 1) {
-			return repositories[0];
+			return { repository: repositories[0] };
 		}
-		return (await vscode.window.showQuickPick(repositories.map(repository => ({
+
+		const remoteItems: RepositoryQuickPickItem[] = repositories.map(repository => ({
 			label: `${repository.workspaceOwner}/${repository.workspaceRepositoryName}`,
-			description: repository.folderManager.repository.rootUri.fsPath,
+			description: repository.workspaceRemoteName,
+			detail: repository.folderManager.repository.rootUri.fsPath,
 			repository,
-		})), {
-			placeHolder: vscode.l10n.t('Choose the workspace repository for this pull request'),
-		}))?.repository;
+		}));
+		const origins = repositories.filter(repository => repository.workspaceRemoteName.toLowerCase() === 'origin');
+		const origin = origins.length === 1 ? origins[0] : undefined;
+
+		return new Promise(resolve => {
+			const quickPick = vscode.window.createQuickPick<RepositoryQuickPickItem>();
+			const subscriptions: vscode.Disposable[] = [];
+			let settled = false;
+			const finish = (selection: RepositorySelection | undefined) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				for (const subscription of subscriptions) {
+					subscription.dispose();
+				}
+				quickPick.dispose();
+				resolve(selection);
+			};
+			const updateItems = (value: string) => {
+				const pullRequestNumber = this.parsePullRequestNumber(value);
+				if (pullRequestNumber !== undefined && origin) {
+					quickPick.items = [{
+						label: vscode.l10n.t('Add pull request #{0}', pullRequestNumber),
+						description: vscode.l10n.t('Use origin: {0}/{1}', origin.workspaceOwner, origin.workspaceRepositoryName),
+						detail: vscode.l10n.t('Press Enter to add directly'),
+						repository: origin,
+						pullRequestNumber,
+					}, ...remoteItems];
+				} else {
+					quickPick.items = remoteItems;
+				}
+			};
+
+			quickPick.placeholder = origin
+				? vscode.l10n.t('Choose a remote, or enter a pull request number to use origin')
+				: vscode.l10n.t('Choose the remote containing the pull request');
+			quickPick.matchOnDescription = true;
+			quickPick.matchOnDetail = true;
+			quickPick.items = remoteItems;
+			subscriptions.push(quickPick.onDidChangeValue(updateItems));
+			subscriptions.push(quickPick.onDidAccept(() => {
+				const pullRequestNumber = this.parsePullRequestNumber(quickPick.value);
+				if (pullRequestNumber !== undefined) {
+					if (origin) {
+						finish({ repository: origin, pullRequestNumber });
+					} else {
+						quickPick.prompt = vscode.l10n.t('No unambiguous origin remote is available. Choose a remote from the list.');
+					}
+					return;
+				}
+
+				const selected = quickPick.selectedItems[0] ?? quickPick.activeItems[0];
+				if (selected) {
+					finish({ repository: selected.repository });
+				}
+			}));
+			subscriptions.push(quickPick.onDidHide(() => finish(undefined)));
+			quickPick.show();
+		});
 	}
 
 	private async findRepository(entry: StackPullRequestEntry): Promise<AvailableRepository | undefined> {
@@ -445,6 +425,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 			githubRepository,
 			workspaceOwner: workspaceRepository.remote.owner,
 			workspaceRepositoryName: workspaceRepository.remote.repositoryName,
+			workspaceRemoteName: workspaceRepository.remote.remoteName,
 		};
 	}
 
@@ -458,8 +439,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 				return false;
 			}
 			const candidate = entry as Partial<StackPullRequestEntry>;
-			return (candidate.kind === 'pullRequest' || candidate.kind === 'stack')
-				&& typeof candidate.workspaceOwner === 'string'
+			return typeof candidate.workspaceOwner === 'string'
 				&& typeof candidate.workspaceRepositoryName === 'string'
 				&& typeof candidate.owner === 'string'
 				&& typeof candidate.repositoryName === 'string'
@@ -486,7 +466,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	}
 
 	private entryKey(entry: StackPullRequestEntry): string {
-		return `${entry.kind}:${entry.owner}/${entry.repositoryName}#${entry.pullRequestNumber}`.toLowerCase();
+		return `${entry.owner}/${entry.repositoryName}#${entry.pullRequestNumber}`.toLowerCase();
 	}
 
 	private setChildren(generation: number, children: TreeNode[]): TreeNode[] {
