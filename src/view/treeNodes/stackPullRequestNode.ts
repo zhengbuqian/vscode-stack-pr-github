@@ -19,6 +19,7 @@ const STACK_PULL_REQUEST_NODE = 'StackPullRequestNode';
 export interface StackPullRequestEntry {
 	workspaceOwner: string;
 	workspaceRepositoryName: string;
+	workspaceRemoteName?: string;
 	owner: string;
 	repositoryName: string;
 	pullRequestNumber: number;

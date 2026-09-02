@@ -37,6 +37,7 @@ interface RepositoryQuickPickItem extends vscode.QuickPickItem {
 export class StackPullRequestsTreeDataProvider extends Disposable implements vscode.TreeDataProvider<TreeNode>, BaseTreeNode {
 	private static readonly ID = 'StackPullRequestsTree';
 	private static readonly STORAGE_KEY = 'stackPullRequests.entries';
+	private static readonly STORAGE_FILE_NAME = 'stack-pull-requests.json';
 	private static readonly OPEN_FILE_DIFF_COMMAND = 'stackPr.openFileDiff';
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | void>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -44,7 +45,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	private _children: TreeNode[] = [];
 	private _loadPromise: Promise<TreeNode[]> | undefined;
 	private _generation = 0;
-	private _storageSnapshot = '';
+	private _storageSnapshot: string | undefined;
 
 	constructor(
 		private readonly _context: vscode.ExtensionContext,
@@ -73,10 +74,9 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		this._register(this._reposManager.onDidChangeAnyGitHubRepository(() => this.refresh()));
 		this._register(vscode.window.onDidChangeWindowState(e => {
 			if (e.focused) {
-				this.refreshIfStorageChanged();
+				void this.refreshIfStorageChanged();
 			}
 		}));
-		this._storageSnapshot = this.serializeEntries(this.getStoredEntries());
 	}
 
 	get view(): vscode.TreeView<TreeNode> {
@@ -158,8 +158,12 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 
 	private async loadRoot(): Promise<TreeNode[]> {
 		const generation = this._generation;
-		const entries = this.getStoredEntries();
+		const entries = await this.getStoredEntries();
 		this._storageSnapshot = this.serializeEntries(entries);
+		Logger.appendLine(
+			`Restoring ${entries.length} globally saved entries: ${this.describeEntries(entries)}`,
+			StackPullRequestsTreeDataProvider.ID,
+		);
 		if (entries.length === 0) {
 			return this.setChildren(generation, [new LabelOnlyNode(this, vscode.l10n.t('No pull requests or stacks added. Use + to add one.'))]);
 		}
@@ -181,6 +185,10 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 					this._prsTreeModel,
 				)];
 			});
+			Logger.appendLine(
+				`Matched ${entryNodes.length} of ${entries.length} saved entries to local remotes`,
+				StackPullRequestsTreeDataProvider.ID,
+			);
 			if (entryNodes.length === 0) {
 				return this.setChildren(generation, [new LabelOnlyNode(this, vscode.l10n.t('No saved pull requests match a repository in this window.'))]);
 			}
@@ -261,11 +269,12 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 			const entry: StackPullRequestEntry = {
 				workspaceOwner: repository.workspaceOwner,
 				workspaceRepositoryName: repository.workspaceRepositoryName,
+				workspaceRemoteName: repository.workspaceRemoteName,
 				owner: repository.githubRepository.remote.owner,
 				repositoryName: repository.githubRepository.remote.repositoryName,
 				pullRequestNumber,
 			};
-			const entries = this.getStoredEntries();
+			const entries = await this.getStoredEntries();
 			if (entries.some(existing => this.entryKey(existing) === this.entryKey(entry))) {
 				vscode.window.showInformationMessage(vscode.l10n.t('That pull request or stack is already in this view.'));
 				return;
@@ -294,7 +303,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 			return;
 		}
 		const key = this.entryKey(node.entry);
-		await this.storeEntries(this.getStoredEntries().filter(entry => this.entryKey(entry) !== key));
+		await this.storeEntries((await this.getStoredEntries()).filter(entry => this.entryKey(entry) !== key));
 		this.refresh();
 	}
 
@@ -410,61 +419,181 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	}
 
 	private async findRepository(entry: StackPullRequestEntry): Promise<AvailableRepository | undefined> {
-		const folderManager = this._reposManager.getManagerForRepository(entry.workspaceOwner, entry.workspaceRepositoryName);
-		if (!folderManager) {
-			return undefined;
+		const availableRemotes: string[] = [];
+		for (const folderManager of this._reposManager.folderManagers) {
+			let remotes;
+			try {
+				remotes = await folderManager.getAllGitHubRemotes();
+			} catch (e) {
+				Logger.warn(
+					`Failed to inspect local remotes in ${folderManager.repository.rootUri.fsPath} while restoring ${this.describeEntry(entry)}: ${e}`,
+					StackPullRequestsTreeDataProvider.ID,
+				);
+				continue;
+			}
+			availableRemotes.push(...remotes.map(remote =>
+				`${remote.remoteName}=${remote.owner}/${remote.repositoryName}@${folderManager.repository.rootUri.fsPath}`,
+			));
+			const remote = remotes.find(candidate =>
+				candidate.owner.toLowerCase() === entry.workspaceOwner.toLowerCase()
+				&& candidate.repositoryName.toLowerCase() === entry.workspaceRepositoryName.toLowerCase()
+				&& (!entry.workspaceRemoteName || candidate.remoteName === entry.workspaceRemoteName),
+			);
+			if (!remote) {
+				continue;
+			}
+
+			const workspaceRepository = folderManager.findExistingGitHubRepository({
+				owner: remote.owner,
+				repositoryName: remote.repositoryName,
+				remoteName: remote.remoteName,
+			}) ?? await folderManager.createGitHubRepositoryFromOwnerName(remote.owner, remote.repositoryName);
+			if (!workspaceRepository) {
+				Logger.warn(
+					`Matched local remote ${remote.remoteName} but could not create its GitHub repository while restoring ${this.describeEntry(entry)}`,
+					StackPullRequestsTreeDataProvider.ID,
+				);
+				return undefined;
+			}
+
+			const isWorkspaceRepository = entry.owner.toLowerCase() === remote.owner.toLowerCase()
+				&& entry.repositoryName.toLowerCase() === remote.repositoryName.toLowerCase();
+			const githubRepository = isWorkspaceRepository
+				? workspaceRepository
+				: folderManager.findExistingGitHubRepository({
+					owner: entry.owner,
+					repositoryName: entry.repositoryName,
+				}) ?? await folderManager.createGitHubRepositoryFromOwnerName(entry.owner, entry.repositoryName);
+			if (!githubRepository) {
+				Logger.warn(
+					`Could not create target GitHub repository ${entry.owner}/${entry.repositoryName} while restoring ${this.describeEntry(entry)}`,
+					StackPullRequestsTreeDataProvider.ID,
+				);
+				return undefined;
+			}
+
+			Logger.appendLine(
+				`Restored ${this.describeEntry(entry)} through local remote ${remote.remoteName} in ${folderManager.repository.rootUri.fsPath}`,
+				StackPullRequestsTreeDataProvider.ID,
+			);
+			return {
+				folderManager,
+				githubRepository,
+				workspaceOwner: remote.owner,
+				workspaceRepositoryName: remote.repositoryName,
+				workspaceRemoteName: remote.remoteName,
+			};
 		}
-		const workspaceRepository = folderManager.findExistingGitHubRepository({
-			owner: entry.workspaceOwner,
-			repositoryName: entry.workspaceRepositoryName,
-		});
-		if (!workspaceRepository) {
-			return undefined;
-		}
-		const githubRepository = folderManager.findExistingGitHubRepository({
-			owner: entry.owner,
-			repositoryName: entry.repositoryName,
-		}) ?? await folderManager.createGitHubRepositoryFromOwnerName(entry.owner, entry.repositoryName);
-		if (!githubRepository) {
-			return undefined;
-		}
-		return {
-			folderManager,
-			githubRepository,
-			workspaceOwner: workspaceRepository.remote.owner,
-			workspaceRepositoryName: workspaceRepository.remote.repositoryName,
-			workspaceRemoteName: workspaceRepository.remote.remoteName,
-		};
+
+		Logger.warn(
+			`No local remote matched saved entry ${this.describeEntry(entry)}. Available remotes: ${availableRemotes.join(', ') || 'none'}`,
+			StackPullRequestsTreeDataProvider.ID,
+		);
+		return undefined;
 	}
 
-	private getStoredEntries(): StackPullRequestEntry[] {
-		const entries = this._context.globalState.get<unknown>(StackPullRequestsTreeDataProvider.STORAGE_KEY, []);
+	private parseStoredEntries(entries: unknown, source: string): StackPullRequestEntry[] {
 		if (!Array.isArray(entries)) {
+			if (entries !== undefined) {
+				Logger.warn(`Ignored invalid Stack Pull Requests storage from ${source}: expected an array`, StackPullRequestsTreeDataProvider.ID);
+			}
 			return [];
 		}
-		return entries.filter((entry): entry is StackPullRequestEntry => {
+		const validEntries = entries.filter((entry): entry is StackPullRequestEntry => {
 			if (!entry || typeof entry !== 'object') {
 				return false;
 			}
 			const candidate = entry as Partial<StackPullRequestEntry>;
 			return typeof candidate.workspaceOwner === 'string'
 				&& typeof candidate.workspaceRepositoryName === 'string'
+				&& (candidate.workspaceRemoteName === undefined || typeof candidate.workspaceRemoteName === 'string')
 				&& typeof candidate.owner === 'string'
 				&& typeof candidate.repositoryName === 'string'
 				&& typeof candidate.pullRequestNumber === 'number'
 				&& Number.isInteger(candidate.pullRequestNumber)
 				&& candidate.pullRequestNumber > 0;
 		});
+		if (validEntries.length !== entries.length) {
+			Logger.warn(
+				`Ignored ${entries.length - validEntries.length} invalid saved entries from ${source}`,
+				StackPullRequestsTreeDataProvider.ID,
+			);
+		}
+		return validEntries;
+	}
+
+	private get storageUri(): vscode.Uri {
+		return vscode.Uri.joinPath(this._context.globalStorageUri, StackPullRequestsTreeDataProvider.STORAGE_FILE_NAME);
+	}
+
+	private async getStoredEntries(): Promise<StackPullRequestEntry[]> {
+		try {
+			const contents = await vscode.workspace.fs.readFile(this.storageUri);
+			const entries = this.parseStoredEntries(JSON.parse(new TextDecoder().decode(contents)), this.storageUri.toString());
+			Logger.appendLine(
+				`Read ${entries.length} entries from ${this.storageUri.toString()}: ${this.describeEntries(entries)}`,
+				StackPullRequestsTreeDataProvider.ID,
+			);
+			return entries;
+		} catch (e) {
+			if (e instanceof vscode.FileSystemError && e.code === 'FileNotFound') {
+				const legacyEntries = this.parseStoredEntries(
+					this._context.globalState.get<unknown>(StackPullRequestsTreeDataProvider.STORAGE_KEY),
+					'legacy globalState',
+				);
+				if (legacyEntries.length > 0) {
+					Logger.appendLine(
+						`Migrating ${legacyEntries.length} entries from legacy globalState: ${this.describeEntries(legacyEntries)}`,
+						StackPullRequestsTreeDataProvider.ID,
+					);
+					await this.writeEntriesFile(legacyEntries);
+				}
+				return legacyEntries;
+			}
+			Logger.error(`Failed to read saved Stack Pull Requests from ${this.storageUri.toString()}: ${e}`, StackPullRequestsTreeDataProvider.ID);
+			return [];
+		}
+	}
+
+	private async writeEntriesFile(entries: StackPullRequestEntry[]): Promise<void> {
+		await vscode.workspace.fs.createDirectory(this._context.globalStorageUri);
+		const tempUri = vscode.Uri.joinPath(
+			this._context.globalStorageUri,
+			`${StackPullRequestsTreeDataProvider.STORAGE_FILE_NAME}.${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`,
+		);
+		try {
+			await vscode.workspace.fs.writeFile(tempUri, new TextEncoder().encode(this.serializeEntries(entries)));
+			await vscode.workspace.fs.rename(tempUri, this.storageUri, { overwrite: true });
+		} finally {
+			try {
+				await vscode.workspace.fs.delete(tempUri);
+			} catch {
+				// The temporary file was already renamed or never created.
+			}
+		}
 	}
 
 	private async storeEntries(entries: StackPullRequestEntry[]): Promise<void> {
-		await this._context.globalState.update(StackPullRequestsTreeDataProvider.STORAGE_KEY, entries);
+		await this.writeEntriesFile(entries);
 		this._storageSnapshot = this.serializeEntries(entries);
+		Logger.appendLine(
+			`Persisted ${entries.length} entries to ${this.storageUri.toString()}: ${this.describeEntries(entries)}`,
+			StackPullRequestsTreeDataProvider.ID,
+		);
 	}
 
-	private refreshIfStorageChanged(): void {
-		const snapshot = this.serializeEntries(this.getStoredEntries());
+	private async refreshIfStorageChanged(): Promise<void> {
+		const entries = await this.getStoredEntries();
+		const snapshot = this.serializeEntries(entries);
+		if (this._storageSnapshot === undefined) {
+			this._storageSnapshot = snapshot;
+			return;
+		}
 		if (snapshot !== this._storageSnapshot) {
+			Logger.appendLine(
+				`Global Stack Pull Requests storage changed while the window was unfocused; refreshing ${entries.length} entries`,
+				StackPullRequestsTreeDataProvider.ID,
+			);
 			this.refresh();
 		}
 	}
@@ -475,6 +604,17 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 
 	private entryKey(entry: StackPullRequestEntry): string {
 		return `${entry.owner}/${entry.repositoryName}#${entry.pullRequestNumber}`.toLowerCase();
+	}
+
+	private describeEntry(entry: StackPullRequestEntry): string {
+		const workspaceRemote = entry.workspaceRemoteName
+			? `${entry.workspaceRemoteName}=${entry.workspaceOwner}/${entry.workspaceRepositoryName}`
+			: `${entry.workspaceOwner}/${entry.workspaceRepositoryName}`;
+		return `${entry.owner}/${entry.repositoryName}#${entry.pullRequestNumber} via ${workspaceRemote}`;
+	}
+
+	private describeEntries(entries: readonly StackPullRequestEntry[]): string {
+		return entries.length > 0 ? entries.map(entry => this.describeEntry(entry)).join(', ') : 'none';
 	}
 
 	private setChildren(generation: number, children: TreeNode[]): TreeNode[] {
