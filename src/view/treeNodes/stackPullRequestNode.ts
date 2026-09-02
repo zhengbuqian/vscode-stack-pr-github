@@ -20,6 +20,8 @@ export type StackPullRequestEntryKind = 'pullRequest' | 'stack';
 
 export interface StackPullRequestEntry {
 	kind: StackPullRequestEntryKind;
+	workspaceOwner: string;
+	workspaceRepositoryName: string;
 	owner: string;
 	repositoryName: string;
 	pullRequestNumber: number;

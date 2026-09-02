@@ -25,6 +25,8 @@ interface ParsedPullRequestInput {
 interface AvailableRepository {
 	folderManager: FolderRepositoryManager;
 	githubRepository: GitHubRepository;
+	workspaceOwner: string;
+	workspaceRepositoryName: string;
 }
 
 export class StackPullRequestsTreeDataProvider extends Disposable implements vscode.TreeDataProvider<TreeNode>, BaseTreeNode {
@@ -158,8 +160,9 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		}
 
 		try {
-			const entryNodes = entries.flatMap(entry => {
-				const repository = this.findRepository(entry.owner, entry.repositoryName);
+			const repositories = await Promise.all(entries.map(entry => this.findRepository(entry)));
+			const entryNodes = entries.flatMap((entry, index) => {
+				const repository = repositories[index];
 				if (!repository) {
 					return [];
 				}
@@ -264,6 +267,8 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 
 			const entry: StackPullRequestEntry = {
 				kind,
+				workspaceOwner: repository.workspaceOwner,
+				workspaceRepositoryName: repository.workspaceRepositoryName,
 				owner: repository.githubRepository.remote.owner,
 				repositoryName: repository.githubRepository.remote.repositoryName,
 				pullRequestNumber: pullRequest.number,
@@ -321,14 +326,27 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	private async resolveInputRepository(parsed: ParsedPullRequestInput): Promise<AvailableRepository | undefined> {
 		const repositories = this.getAvailableRepositories();
 		if (parsed.owner && parsed.repositoryName) {
-			const repository = repositories.find(candidate =>
+			const existingRepository = repositories.find(candidate =>
 				candidate.githubRepository.remote.owner.toLowerCase() === parsed.owner!.toLowerCase()
 				&& candidate.githubRepository.remote.repositoryName.toLowerCase() === parsed.repositoryName!.toLowerCase(),
 			);
-			if (!repository) {
-				vscode.window.showErrorMessage(vscode.l10n.t('Open a checkout of {0}/{1} before adding this pull request.', parsed.owner, parsed.repositoryName));
+			if (existingRepository) {
+				return existingRepository;
 			}
-			return repository;
+
+			const workspaceRepository = await this.pickWorkspaceRepository();
+			if (!workspaceRepository) {
+				return undefined;
+			}
+			const githubRepository = await workspaceRepository.folderManager.createGitHubRepositoryFromOwnerName(
+				parsed.owner,
+				parsed.repositoryName,
+			);
+			if (!githubRepository) {
+				vscode.window.showErrorMessage(vscode.l10n.t('Unable to access {0}/{1}.', parsed.owner, parsed.repositoryName));
+				return undefined;
+			}
+			return { ...workspaceRepository, githubRepository };
 		}
 
 		if (repositories.length === 0) {
@@ -351,21 +369,83 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	private getAvailableRepositories(): AvailableRepository[] {
 		const repositories = new Map<string, AvailableRepository>();
 		for (const folderManager of this._reposManager.folderManagers) {
+			const workspaceRepository = folderManager.gitHubRepositories[0];
+			if (!workspaceRepository) {
+				continue;
+			}
 			for (const githubRepository of folderManager.gitHubRepositories) {
 				const key = `${githubRepository.remote.owner}/${githubRepository.remote.repositoryName}`.toLowerCase();
 				if (!repositories.has(key)) {
-					repositories.set(key, { folderManager, githubRepository });
+					repositories.set(key, {
+						folderManager,
+						githubRepository,
+						workspaceOwner: workspaceRepository.remote.owner,
+						workspaceRepositoryName: workspaceRepository.remote.repositoryName,
+					});
 				}
 			}
 		}
 		return Array.from(repositories.values());
 	}
 
-	private findRepository(owner: string, repositoryName: string): AvailableRepository | undefined {
-		return this.getAvailableRepositories().find(repository =>
-			repository.githubRepository.remote.owner.toLowerCase() === owner.toLowerCase()
-			&& repository.githubRepository.remote.repositoryName.toLowerCase() === repositoryName.toLowerCase(),
-		);
+	private getWorkspaceRepositories(): AvailableRepository[] {
+		return this._reposManager.folderManagers.flatMap(folderManager => {
+			const githubRepository = folderManager.gitHubRepositories[0];
+			if (!githubRepository) {
+				return [];
+			}
+			return [{
+				folderManager,
+				githubRepository,
+				workspaceOwner: githubRepository.remote.owner,
+				workspaceRepositoryName: githubRepository.remote.repositoryName,
+			}];
+		});
+	}
+
+	private async pickWorkspaceRepository(): Promise<AvailableRepository | undefined> {
+		const repositories = this.getWorkspaceRepositories();
+		if (repositories.length === 0) {
+			vscode.window.showErrorMessage(vscode.l10n.t('No GitHub repository is available in this window.'));
+			return undefined;
+		}
+		if (repositories.length === 1) {
+			return repositories[0];
+		}
+		return (await vscode.window.showQuickPick(repositories.map(repository => ({
+			label: `${repository.workspaceOwner}/${repository.workspaceRepositoryName}`,
+			description: repository.folderManager.repository.rootUri.fsPath,
+			repository,
+		})), {
+			placeHolder: vscode.l10n.t('Choose the workspace repository for this pull request'),
+		}))?.repository;
+	}
+
+	private async findRepository(entry: StackPullRequestEntry): Promise<AvailableRepository | undefined> {
+		const folderManager = this._reposManager.getManagerForRepository(entry.workspaceOwner, entry.workspaceRepositoryName);
+		if (!folderManager) {
+			return undefined;
+		}
+		const workspaceRepository = folderManager.findExistingGitHubRepository({
+			owner: entry.workspaceOwner,
+			repositoryName: entry.workspaceRepositoryName,
+		});
+		if (!workspaceRepository) {
+			return undefined;
+		}
+		const githubRepository = folderManager.findExistingGitHubRepository({
+			owner: entry.owner,
+			repositoryName: entry.repositoryName,
+		}) ?? await folderManager.createGitHubRepositoryFromOwnerName(entry.owner, entry.repositoryName);
+		if (!githubRepository) {
+			return undefined;
+		}
+		return {
+			folderManager,
+			githubRepository,
+			workspaceOwner: workspaceRepository.remote.owner,
+			workspaceRepositoryName: workspaceRepository.remote.repositoryName,
+		};
 	}
 
 	private getStoredEntries(): StackPullRequestEntry[] {
@@ -379,6 +459,8 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 			}
 			const candidate = entry as Partial<StackPullRequestEntry>;
 			return (candidate.kind === 'pullRequest' || candidate.kind === 'stack')
+				&& typeof candidate.workspaceOwner === 'string'
+				&& typeof candidate.workspaceRepositoryName === 'string'
 				&& typeof candidate.owner === 'string'
 				&& typeof candidate.repositoryName === 'string'
 				&& typeof candidate.pullRequestNumber === 'number'
