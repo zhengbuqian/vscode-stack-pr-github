@@ -215,7 +215,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		if (pullRequestNumber === undefined) {
 			const input = await vscode.window.showInputBox({
 				prompt: vscode.l10n.t(
-					'Enter a pull request number for {0}/{1}',
+					'Enter a pull request or stack number for {0}/{1}',
 					repository.githubRepository.remote.owner,
 					repository.githubRepository.remote.repositoryName,
 				),
@@ -223,7 +223,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 				ignoreFocusOut: true,
 				validateInput: value => this.parsePullRequestNumber(value)
 					? undefined
-					: vscode.l10n.t('Enter a valid pull request number.'),
+					: vscode.l10n.t('Enter a valid pull request or stack number.'),
 			});
 			if (!input) {
 				return;
@@ -233,7 +233,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 
 		await vscode.window.withProgress({
 			location: vscode.ProgressLocation.Window,
-			title: vscode.l10n.t('Adding pull request...'),
+			title: vscode.l10n.t('Adding pull request or stack...'),
 		}, async () => this.validateAndStoreEntry(pullRequestNumber!, repository));
 	}
 
@@ -247,7 +247,15 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 				StackPullRequestsTreeDataProvider.ID,
 			);
 			if (!pullRequest?.isResolved()) {
-				throw new Error(vscode.l10n.t('Pull request not found.'));
+				const stackPullRequestNumbers = await repository.githubRepository.getPullRequestNumbersForStack(pullRequestNumber);
+				if (!stackPullRequestNumbers?.length) {
+					throw new Error(vscode.l10n.t(
+						'Pull request or stack #{0} not found in {1}/{2}.',
+						pullRequestNumber,
+						repository.githubRepository.remote.owner,
+						repository.githubRepository.remote.repositoryName,
+					));
+				}
 			}
 
 			const entry: StackPullRequestEntry = {
@@ -255,7 +263,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 				workspaceRepositoryName: repository.workspaceRepositoryName,
 				owner: repository.githubRepository.remote.owner,
 				repositoryName: repository.githubRepository.remote.repositoryName,
-				pullRequestNumber: pullRequest.number,
+				pullRequestNumber,
 			};
 			const entries = this.getStoredEntries();
 			if (entries.some(existing => this.entryKey(existing) === this.entryKey(entry))) {
@@ -362,7 +370,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 				const pullRequestNumber = this.parsePullRequestNumber(value);
 				if (pullRequestNumber !== undefined && origin) {
 					quickPick.items = [{
-						label: vscode.l10n.t('Add pull request #{0}', pullRequestNumber),
+						label: vscode.l10n.t('Add pull request or stack #{0}', pullRequestNumber),
 						description: vscode.l10n.t('Use origin: {0}/{1}', origin.workspaceOwner, origin.workspaceRepositoryName),
 						detail: vscode.l10n.t('Press Enter to add directly'),
 						repository: origin,
@@ -374,8 +382,8 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 			};
 
 			quickPick.placeholder = origin
-				? vscode.l10n.t('Choose a remote, or enter a pull request number to use origin')
-				: vscode.l10n.t('Choose the remote containing the pull request');
+				? vscode.l10n.t('Choose a remote, or enter a pull request or stack number to use origin')
+				: vscode.l10n.t('Choose the remote containing the pull request or stack');
 			quickPick.matchOnDescription = true;
 			quickPick.matchOnDetail = true;
 			quickPick.items = remoteItems;

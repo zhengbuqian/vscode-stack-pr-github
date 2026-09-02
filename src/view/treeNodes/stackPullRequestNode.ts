@@ -128,20 +128,32 @@ export class StackPullRequestEntryNode extends TreeNode implements vscode.TreeIt
 				this.entry.pullRequestNumber,
 				STACK_PULL_REQUEST_NODE,
 			);
-			if (!pullRequest?.isResolved()) {
-				throw new Error(vscode.l10n.t('Pull request not found.'));
-			}
-
-			const stack = await this._resolver.resolve(pullRequest);
 			let pullRequests: StackPullRequestGraphNode[];
-			if (stack && stack.size >= 2) {
+			if (pullRequest?.isResolved()) {
+				const stack = await this._resolver.resolve(pullRequest);
+				if (stack && stack.size >= 2) {
+					this._isStack = true;
+					this.label = vscode.l10n.t('Stack {0}/{1} #{2}', this.entry.owner, this.entry.repositoryName, this.entry.pullRequestNumber);
+					pullRequests = this.flattenStack(stack.root);
+				} else {
+					this._isStack = false;
+					this.label = vscode.l10n.t('Pull Request {0}/{1} #{2}', this.entry.owner, this.entry.repositoryName, this.entry.pullRequestNumber);
+					pullRequests = [{ pullRequest, children: [] }];
+				}
+			} else {
+				const stackPullRequestNumbers = await this._githubRepository.getPullRequestNumbersForStack(this.entry.pullRequestNumber);
+				if (!stackPullRequestNumbers?.length) {
+					throw new Error(vscode.l10n.t('Pull request or stack not found.'));
+				}
+				const stackPullRequests = await Promise.all(stackPullRequestNumbers.map(number =>
+					this._githubRepository.getPullRequest(number, STACK_PULL_REQUEST_NODE),
+				));
+				if (stackPullRequests.some(member => !member?.isResolved())) {
+					throw new Error(vscode.l10n.t('One or more pull requests in stack #{0} could not be loaded.', this.entry.pullRequestNumber));
+				}
 				this._isStack = true;
 				this.label = vscode.l10n.t('Stack {0}/{1} #{2}', this.entry.owner, this.entry.repositoryName, this.entry.pullRequestNumber);
-				pullRequests = this.flattenStack(stack.root);
-			} else {
-				this._isStack = false;
-				this.label = vscode.l10n.t('Pull Request {0}/{1} #{2}', this.entry.owner, this.entry.repositoryName, this.entry.pullRequestNumber);
-				pullRequests = [{ pullRequest, children: [] }];
+				pullRequests = stackPullRequests.map(member => ({ pullRequest: member!, children: [] }));
 			}
 
 			const pullRequestNodes = pullRequests.map(node => new StackPullRequestNode(

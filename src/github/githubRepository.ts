@@ -111,6 +111,13 @@ export interface PullRequestData extends ItemsData<PullRequestModel> {
 	items: PullRequestModel[];
 }
 
+interface PullRequestStackResponse {
+	number: number;
+	pull_requests: Array<{
+		number: number;
+	}>;
+}
+
 export interface MilestoneData extends ItemsData<{ milestone: IMilestone; issues: IssueModel[] }> {
 	items: { milestone: IMilestone; issues: IssueModel[] }[];
 	hasMorePages: boolean;
@@ -759,6 +766,38 @@ export class GitHubRepository extends Disposable {
 			}
 		}
 		return [];
+	}
+
+	async getPullRequestNumbersForStack(stackNumber: number): Promise<number[] | undefined> {
+		try {
+			const { octokit, remote } = await this.ensure();
+			Logger.debug(`Fetch pull request stack ${remote.owner}/${remote.repositoryName} ${stackNumber} - enter`, this.id);
+			const response = await octokit.api.request(
+				'GET /repos/{owner}/{repo}/stacks/{stack_number}',
+				{
+					owner: remote.owner,
+					repo: remote.repositoryName,
+					stack_number: stackNumber,
+					headers: {
+						'X-GitHub-Api-Version': '2026-03-10',
+					},
+				},
+			);
+			Logger.debug(`Fetch pull request stack ${stackNumber} - done`, this.id);
+			const stack = response.data as PullRequestStackResponse;
+			if (stack.number !== stackNumber || !Array.isArray(stack.pull_requests)) {
+				return undefined;
+			}
+			return stack.pull_requests
+				.map(pullRequest => pullRequest.number)
+				.filter(number => Number.isSafeInteger(number) && number > 0);
+		} catch (e) {
+			if (getErrorCode(e) === '404') {
+				return undefined;
+			}
+			Logger.error(`Fetching pull request stack #${stackNumber} failed: ${e}`, this.id);
+			throw e;
+		}
 	}
 
 	async getPullRequestNumbers(): Promise<PullRequestNumberData[] | undefined> {
