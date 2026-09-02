@@ -24,6 +24,7 @@ module.exports.all = [
 module.exports.unicodeFilter = [
 	'**',
 	// except specific files
+	'!.readme/**/*',
 	'!documentation/**/*',
 	'!src/@types/vscode.proposed*.d.ts',
 	'!**/ThirdPartyNotices.txt',
@@ -38,6 +39,7 @@ module.exports.indentationFilter = [
 	'**',
 
 	// except specific files
+	'!.readme/**/*',
 	'!CHANGELOG.md',
 	'!documentation/**/*',
 	'!**/ThirdPartyNotices.txt',

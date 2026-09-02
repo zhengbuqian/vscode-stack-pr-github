@@ -31,6 +31,8 @@ A separate layers icon is added to the Activity Bar. Its view is independent of 
 
 Multiple pull requests and stacks can be added as separate top-level entries. Pull requests belonging to a stack are displayed as sibling entries rather than nested branches.
 
+![Stack Pull Requests view showing multiple stacks and their changed files](https://raw.githubusercontent.com/zhengbuqian/vscode-stack-pr-github/buqian/StackPR/.readme/stack-pull-requests.png)
+
 ### Add a pull request or a stack by number
 
 Use the **+** button in the Stack Pull Requests view and enter either:
