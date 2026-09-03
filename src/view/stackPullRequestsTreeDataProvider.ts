@@ -6,15 +6,15 @@
 import * as vscode from 'vscode';
 import { PrsTreeModel } from './prsTreeModel';
 import { StackPullRequestResolver } from './stackPullRequestResolver';
-import { Disposable, disposeAll } from '../common/lifecycle';
 import { GitChangeType } from '../common/file';
+import { Disposable, disposeAll } from '../common/lifecycle';
 import Logger from '../common/logger';
+import { FolderRepositoryManager } from '../github/folderRepositoryManager';
 import { RepositoriesManager } from '../github/repositoriesManager';
 import { NotificationsManager } from '../notifications/notificationsManager';
 import { InMemFileChangeNode, RemoteFileChangeNode } from './treeNodes/fileChangeNode';
 import { StackPullRequestEntry, StackPullRequestEntryNode } from './treeNodes/stackPullRequestNode';
 import { BaseTreeNode, LabelOnlyNode, TreeNode } from './treeNodes/treeNode';
-import { FolderRepositoryManager } from '../github/folderRepositoryManager';
 import { GitHubRepository } from '../github/githubRepository';
 
 interface AvailableRepository {
