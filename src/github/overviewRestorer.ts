@@ -27,7 +27,11 @@ export class OverviewRestorer extends Disposable implements vscode.WebviewPanelS
 		super();
 		this._register(vscode.window.registerWebviewPanelSerializer(IssueOverviewPanel.viewType, this));
 		this._register(vscode.window.registerWebviewPanelSerializer(PullRequestOverviewPanel.viewType, this));
-		this._register(registerGitHubIssueOrPullRequestExternalUriOpener(_extensionUri, _repositoriesManager, _telemetry));
+		try {
+			this._register(registerGitHubIssueOrPullRequestExternalUriOpener(_extensionUri, _repositoriesManager, _telemetry));
+		} catch (e) {
+			Logger.warn(`Failed to register external URI opener: ${e}`, OverviewRestorer.ID);
+		}
 	}
 
 	async deserializeWebviewPanel(webviewPanel: vscode.WebviewPanel, state: PullRequest): Promise<void> {
