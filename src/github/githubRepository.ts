@@ -255,22 +255,34 @@ export class GitHubRepository extends Disposable {
 		return Array.from(this._issueModelsByNumber.values().map(value => value.model));
 	}
 
+	private _ensureCommentsControllerPromise: Promise<void> | undefined;
+
 	public async ensureCommentsController(): Promise<void> {
-		try {
-			await this.ensure();
-			if (this.commentsController) {
-				return;
-			}
-			this.commentsController = vscode.comments.createCommentController(
-				`${PullRequestCommentController.PREFIX}-${this.remote.gitProtocol.normalizeUri()?.authority}-${this.remote.remoteName}-${this.remote.owner}-${this.remote.repositoryName}`,
-				`Pull Request (${this.remote.owner}/${this.remote.repositoryName})`,
-			);
-			this.commentsHandler = new PRCommentControllerRegistry(this.commentsController, this.telemetry);
-			this._register(this.commentsHandler);
-			this._register(this.commentsController);
-		} catch (e) {
-			console.log(e);
+		if (this.commentsController) {
+			return;
 		}
+		if (!this._ensureCommentsControllerPromise) {
+			this._ensureCommentsControllerPromise = (async () => {
+				try {
+					await this.ensure();
+					if (this.commentsController) {
+						return;
+					}
+					this.commentsController = vscode.comments.createCommentController(
+						`${PullRequestCommentController.PREFIX}-${this.remote.gitProtocol.normalizeUri()?.authority}-${this.remote.remoteName}-${this.remote.owner}-${this.remote.repositoryName}`,
+						`Pull Request (${this.remote.owner}/${this.remote.repositoryName})`,
+					);
+					this.commentsHandler = new PRCommentControllerRegistry(this.commentsController, this.telemetry);
+					this._register(this.commentsHandler);
+					this._register(this.commentsController);
+				} catch (e) {
+					console.log(e);
+				} finally {
+					this._ensureCommentsControllerPromise = undefined;
+				}
+			})();
+		}
+		return this._ensureCommentsControllerPromise;
 	}
 
 	override dispose() {
@@ -749,7 +761,7 @@ export class GitHubRepository extends Disposable {
 			});
 
 			const models = pullRequests
-				.filter(pullRequest => !!pullRequest.head.repo)
+				.filter(pullRequest => !!pullRequest.head?.repo)
 				.map(pullRequest => this.createOrUpdatePullRequestModel(
 					convertRESTPullRequestToRawPullRequest(pullRequest, this),
 				));

@@ -42,9 +42,12 @@ export class StackPullRequestResolver {
 	}
 
 	private refsEqual(
-		a: { owner: string; name: string; ref: string },
-		b: { owner: string; name: string; ref: string },
+		a: { owner?: string; name?: string; ref?: string } | null | undefined,
+		b: { owner?: string; name?: string; ref?: string } | null | undefined,
 	): boolean {
+		if (!a?.owner || !b?.owner || !a?.name || !b?.name || !a?.ref || !b?.ref) {
+			return false;
+		}
 		return a.owner.toLowerCase() === b.owner.toLowerCase()
 			&& a.name.toLowerCase() === b.name.toLowerCase()
 			&& a.ref === b.ref;
@@ -55,6 +58,9 @@ export class StackPullRequestResolver {
 		const visited = new Set<string>([this.pullRequestKey(current)]);
 
 		while (current.isResolved()) {
+			if (!current.base?.ref || !current.base?.owner) {
+				break;
+			}
 			const parent = await current.githubRepository.getPullRequestForBranch(current.base.ref, current.base.owner);
 			if (!parent?.isResolved()
 				|| parent.state !== GithubItemStateEnum.Open
@@ -82,11 +88,19 @@ export class StackPullRequestResolver {
 		const key = this.pullRequestKey(pullRequest);
 		visited.add(key);
 
-		if (!pullRequest.isResolved()) {
+		if (!pullRequest.isResolved() || !pullRequest.head?.ref) {
 			return { pullRequest, children: [] };
 		}
 
-		const candidates = await pullRequest.githubRepository.getOpenPullRequestsForBase(pullRequest.head.ref);
+		let candidates: PullRequestModel[] = [];
+		try {
+			candidates = await pullRequest.githubRepository.getOpenPullRequestsForBase(pullRequest.head.ref);
+		} catch (e) {
+			Logger.warn(
+				`Failed to fetch open pull requests for base branch ${pullRequest.head.ref}: ${e}`,
+				StackPullRequestResolver.ID,
+			);
+		}
 		const children: StackPullRequestGraphNode[] = [];
 		for (const candidate of candidates.sort((a, b) => a.number - b.number)) {
 			if (!candidate.isResolved()

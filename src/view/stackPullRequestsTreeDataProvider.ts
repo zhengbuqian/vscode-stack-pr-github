@@ -315,7 +315,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 
 	private parsePullRequestNumber(value: string): number | undefined {
 		const input = value.trim();
-		const match = /^#?(\d+)$/.exec(input);
+		const match = /(?:pull\/|stacks\/|^#?)(\d+)/i.exec(input);
 		const pullRequestNumber = match ? Number(match[1]) : undefined;
 		return pullRequestNumber && Number.isSafeInteger(pullRequestNumber) ? pullRequestNumber : undefined;
 	}
@@ -444,6 +444,9 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 				candidate.owner.toLowerCase() === entry.workspaceOwner.toLowerCase()
 				&& candidate.repositoryName.toLowerCase() === entry.workspaceRepositoryName.toLowerCase()
 				&& (!entry.workspaceRemoteName || candidate.remoteName === entry.workspaceRemoteName),
+			) ?? remotes.find(candidate =>
+				candidate.owner.toLowerCase() === entry.workspaceOwner.toLowerCase()
+				&& candidate.repositoryName.toLowerCase() === entry.workspaceRepositoryName.toLowerCase(),
 			);
 			if (!remote) {
 				continue;

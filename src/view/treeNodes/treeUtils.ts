@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { groupBy } from '../../common/utils';
 import { DirectoryTreeNode } from './directoryTreeNode';
 import { FileChangeNode } from './fileChangeNode';
 import { TreeNode } from './treeNode';
+import { groupBy } from '../../common/utils';
 
 export namespace TreeUtils {
 	export function processCheckboxUpdates(checkboxUpdates: vscode.TreeCheckboxChangeEvent<TreeNode>, selection: readonly TreeNode[]) {
