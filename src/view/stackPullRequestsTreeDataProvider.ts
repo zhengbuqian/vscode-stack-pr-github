@@ -15,6 +15,7 @@ import { NotificationsManager } from '../notifications/notificationsManager';
 import { InMemFileChangeNode, RemoteFileChangeNode } from './treeNodes/fileChangeNode';
 import { StackPullRequestEntry, StackPullRequestEntryNode } from './treeNodes/stackPullRequestNode';
 import { BaseTreeNode, LabelOnlyNode, TreeNode } from './treeNodes/treeNode';
+import { TreeUtils } from './treeNodes/treeUtils';
 import { GitHubRepository } from '../github/githubRepository';
 
 interface AvailableRepository {
@@ -59,8 +60,10 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		this._view = this._register(vscode.window.createTreeView('stackPr:github', {
 			treeDataProvider: this,
 			showCollapseAll: true,
+			manageCheckboxStateManually: true,
 		}));
 		this._register(this._onDidChangeTreeData);
+		this._register(this._view.onDidChangeCheckboxState(e => TreeUtils.processCheckboxUpdates(e, this._view.selection)));
 		this._register(vscode.commands.registerCommand('stackPr.refresh', () => this.refresh()));
 		this._register(vscode.commands.registerCommand('stackPr.add', () => this.addEntry()));
 		this._register(vscode.commands.registerCommand('stackPr.refreshEntry', (node: StackPullRequestEntryNode) => this.refreshEntry(node)));

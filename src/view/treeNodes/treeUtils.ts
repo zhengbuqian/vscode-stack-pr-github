@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { groupBy } from '../../common/utils';
 import { DirectoryTreeNode } from './directoryTreeNode';
 import { FileChangeNode } from './fileChangeNode';
 import { TreeNode } from './treeNode';
@@ -92,18 +93,26 @@ export namespace TreeUtils {
 		// Send API requests without firing state change events (UI is already updated optimistically).
 		// This prevents race conditions where overlapping markFiles calls cause checkboxes to flicker.
 		if (checkedNodes.length > 0) {
-			const prModel = checkedNodes[0].pullRequest;
-			const filenames = checkedNodes.map(n => n.fileName);
-			prModel.markFiles(filenames, false, 'viewed').then(() => {
-				checkedNodes[0].refreshFileViewedContext();
-			});
+			const checkedByPr = groupBy(checkedNodes, n => `${n.pullRequest.number}`);
+			for (const key of Object.keys(checkedByPr)) {
+				const nodes = checkedByPr[key];
+				const prModel = nodes[0].pullRequest;
+				const filenames = nodes.map(n => n.fileName);
+				prModel.markFiles(filenames, false, 'viewed').then(() => {
+					nodes[0].refreshFileViewedContext();
+				});
+			}
 		}
 		if (uncheckedNodes.length > 0) {
-			const prModel = uncheckedNodes[0].pullRequest;
-			const filenames = uncheckedNodes.map(n => n.fileName);
-			prModel.markFiles(filenames, false, 'unviewed').then(() => {
-				uncheckedNodes[0].refreshFileViewedContext();
-			});
+			const uncheckedByPr = groupBy(uncheckedNodes, n => `${n.pullRequest.number}`);
+			for (const key of Object.keys(uncheckedByPr)) {
+				const nodes = uncheckedByPr[key];
+				const prModel = nodes[0].pullRequest;
+				const filenames = nodes.map(n => n.fileName);
+				prModel.markFiles(filenames, false, 'unviewed').then(() => {
+					nodes[0].refreshFileViewedContext();
+				});
+			}
 		}
 	}
 
