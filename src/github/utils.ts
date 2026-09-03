@@ -615,9 +615,9 @@ export function parseGraphQLComment(comment: GraphQL.ReviewComment, isResolved: 
 		pullRequestReviewId: comment.pullRequestReview && comment.pullRequestReview.databaseId,
 		diffHunk: comment.diffHunk,
 		position: comment.position,
-		commitId: comment.commit.oid,
+		commitId: comment.commit?.oid ?? '',
 		originalPosition: comment.originalPosition,
-		originalCommitId: comment.originalCommit && comment.originalCommit.oid,
+		originalCommitId: comment.originalCommit?.oid,
 		user: comment.author ? parseAccount(comment.author, githubRepository) : undefined,
 		createdAt: comment.createdAt,
 		htmlUrl: comment.url,
@@ -1306,14 +1306,14 @@ export async function parseCombinedTimelineEvents(
 				addTimelineEvent({
 					id: commitEv.id,
 					event: type,
-					sha: commitEv.commit.oid,
-					author: commitEv.commit.author.user
+					sha: commitEv.commit?.oid ?? '',
+					author: commitEv.commit?.author?.user
 						? parseAccount(commitEv.commit.author.user, githubRepository)
-						: { login: commitEv.commit.committer.name },
+						: { login: commitEv.commit?.committer?.name ?? '' },
 					htmlUrl: commitEv.url,
-					message: commitEv.commit.message,
-					committedDate: new Date(commitEv.commit.committedDate),
-					verification: commitEv.commit.signature ? {
+					message: commitEv.commit?.message ?? '',
+					committedDate: new Date(commitEv.commit?.committedDate ?? 0),
+					verification: commitEv.commit?.signature ? {
 						verified: commitEv.commit.signature.isValid,
 						state: commitEv.commit.signature.state,
 						wasSignedByGitHub: commitEv.commit.signature.wasSignedByGitHub,
@@ -1326,7 +1326,7 @@ export async function parseCombinedTimelineEvents(
 						keyFingerprint: commitEv.commit.signature.keyFingerprint ?? undefined,
 						email: commitEv.commit.signature.email ?? undefined,
 					} : undefined,
-					status: commitEv.commit.statusCheckRollup?.state
+					status: commitEv.commit?.statusCheckRollup?.state
 				} as Common.CommitEvent); // TODO remove cast
 				break;
 			case Common.EventType.Merged:
@@ -1338,8 +1338,8 @@ export async function parseCombinedTimelineEvents(
 					user: parseActor(mergeEv.actor, githubRepository),
 					createdAt: mergeEv.createdAt,
 					mergeRef: mergeEv.mergeRef.name,
-					sha: mergeEv.commit.oid,
-					commitUrl: mergeEv.commit.commitUrl,
+					sha: mergeEv.commit?.oid ?? '',
+					commitUrl: mergeEv.commit?.commitUrl ?? '',
 					url: mergeEv.url,
 					graphNodeId: mergeEv.id,
 				});

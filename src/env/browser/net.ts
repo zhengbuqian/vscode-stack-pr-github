@@ -4,3 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 export const agent = undefined;
+export function getAgent(_url?: string) {
+	return undefined;
+}
+export function isProxyAgent(_agentToTest?: any): boolean {
+	return false;
+}

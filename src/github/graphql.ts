@@ -173,10 +173,10 @@ export interface ReviewComment {
 	pullRequestReview: {
 		databaseId: number;
 	};
-	commit: {
+	commit?: {
 		oid: string;
 	};
-	originalCommit: {
+	originalCommit?: {
 		oid: string;
 	};
 	createdAt: string;

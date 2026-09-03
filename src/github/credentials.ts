@@ -20,7 +20,7 @@ import * as PersistentState from '../common/persistentState';
 import { GITHUB_ENTERPRISE, URI } from '../common/settingKeys';
 import { initBasedOnSettingChange } from '../common/settingsUtils';
 import { ITelemetry } from '../common/telemetry';
-import { agent } from '../env/node/net';
+import { agent, getAgent, isProxyAgent } from '../env/node/net';
 
 const TRY_AGAIN = vscode.l10n.t('Try again?');
 const CANCEL = vscode.l10n.t('Cancel');
@@ -643,8 +643,9 @@ export class CredentialStore extends Disposable {
 			};
 		}
 
+		const currentAgent = getAgent ? getAgent() : agent;
 		const octokit = new Octokit({
-			request: { agent, fetch: fetchCore },
+			request: { agent: currentAgent, fetch: fetchCore },
 			userAgent: 'GitHub VSCode Pull Requests',
 			// `shadow-cat-preview` is required for Draft PR API access -- https://developer.github.com/v3/previews/#draft-pull-requests
 			previews: ['shadow-cat-preview', 'merge-info-preview'],
@@ -679,8 +680,16 @@ export class CredentialStore extends Disposable {
 	}
 }
 
-const link = (url: string, token: string) =>
-	setContext((_, { headers }) => ({
+const link = (url: string, token: string) => {
+	const currentAgent = getAgent ? getAgent() : agent;
+	const customFetch = (input: URL | string, init?: RequestInit) => {
+		const initOptions = isProxyAgent && isProxyAgent(currentAgent)
+			? { ...init, agent: currentAgent }
+			: init;
+		return fetch(input as unknown as RequestInfo, initOptions as RequestInit);
+	};
+
+	return setContext((_, { headers }) => ({
 		headers: {
 			...headers,
 			authorization: token ? `Bearer ${token}` : '',
@@ -690,9 +699,10 @@ const link = (url: string, token: string) =>
 		createHttpLink({
 			uri: `${url}/graphql`,
 			// https://github.com/apollographql/apollo-link/issues/513
-			fetch: fetch as (((input: URL | string, init?: RequestInit) => Promise<Response>) | undefined),
+			fetch: customFetch as (((input: URL | string, init?: RequestInit) => Promise<Response>) | undefined),
 		}),
 	);
+};
 
 function getGitHubSuffix(authProviderId: AuthProvider) {
 	return !isEnterprise(authProviderId) ? '' : ' Enterprise';

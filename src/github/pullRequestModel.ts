@@ -644,7 +644,7 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 			}
 
 			const latestReview = data.repository?.pullRequest.reviews.nodes[0];
-			return latestReview ? {
+			return latestReview?.commit?.oid ? {
 				sha: latestReview.commit.oid,
 			} : undefined;
 		}
