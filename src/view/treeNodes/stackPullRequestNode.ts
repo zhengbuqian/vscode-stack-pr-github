@@ -215,7 +215,7 @@ export class StackPullRequestNode extends PRNode {
 			false,
 			notificationsManager,
 			prsTreeModel,
-			{ forceRemote: true },
+			{ forceRemote: true, appendPullRequestNumber: true },
 		);
 	}
 

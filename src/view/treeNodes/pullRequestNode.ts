@@ -27,6 +27,7 @@ import { PrsTreeModel } from '../prsTreeModel';
 
 export interface PRNodeOptions {
 	forceRemote?: boolean;
+	appendPullRequestNumber?: boolean;
 }
 
 export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 {
@@ -346,6 +347,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 		}
 
 		if (
+			!this._options.appendPullRequestNumber &&
 			vscode.workspace
 				.getConfiguration(PR_SETTINGS_NAMESPACE)
 				.get<boolean>(SHOW_PULL_REQUEST_NUMBER_IN_TREE, false)
@@ -360,6 +362,10 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 		}
 		// Escape any $(...) syntax to avoid rendering PR titles as icons.
 		label += labelTitle.replace(/\$\([a-zA-Z0-9~-]+\)/g, '\\$&');
+
+		if (this._options.appendPullRequestNumber && !labelTitle.trim().endsWith(`#${number}`) && !labelTitle.trim().endsWith(`(#${number})`)) {
+			label += ` #${number}`;
+		}
 
 		const iconMode = vscode.workspace.getConfiguration(PR_SETTINGS_NAMESPACE).get<PullRequestAvatarDisplay>(PULL_REQUEST_AVATAR_DISPLAY, 'author');
 		if (isDraft && iconMode !== 'state') {
