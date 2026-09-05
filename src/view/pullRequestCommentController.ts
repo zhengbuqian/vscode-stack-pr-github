@@ -232,20 +232,19 @@ export class PullRequestCommentController extends CommentControllerBase implemen
 			const fileName = thread.path;
 			const key = this.getCommentThreadCacheKey(thread.path, thread.diffSide === DiffSide.LEFT);
 
-			// Defensive: if a comment thread for this review thread id already exists in the cache
-			// (e.g. because addThreadsForEditors already created it from the cache before this event was
-			// processed), update it in place instead of creating a duplicate VS Code comment thread.
 			const existing = this._commentThreadCache[key]?.find(t => t.gitHubThreadId === thread.id);
-			if (existing) {
-				updateThread(this._context, existing, thread, this._githubRepositories);
-				continue;
-			}
-
 			const index = this._pendingCommentThreadAdds.findIndex(t => {
 				const samePath = this._folderRepoManager.gitRelativeRootPath(t.uri.path) === thread.path;
 				const sameLine = (t.range === undefined && thread.subjectType === SubjectType.FILE) || (t.range && t.range.end.line + 1 === thread.endLine);
-				return samePath && sameLine;
+				return samePath && sameLine && this.getCommentSide(t) === thread.diffSide;
 			});
+
+			// Opening an editor can populate the cache before the added event arrives.
+			// Prefer the pending UI thread so its temporary comment is always replaced.
+			if (existing && index === -1) {
+				updateThread(this._context, existing, thread, this._githubRepositories);
+				continue;
+			}
 
 			let newThread: GHPRCommentThread | undefined = undefined;
 			if (index > -1) {
@@ -254,6 +253,12 @@ export class PullRequestCommentController extends CommentControllerBase implemen
 				newThread.comments = thread.comments.map(c => new GHPRComment(this._context, c, newThread!, this._githubRepositories));
 				updateThreadWithRange(this._context, newThread, thread, this._githubRepositories, undefined, true);
 				this._pendingCommentThreadAdds.splice(index, 1);
+				if (existing) {
+					this._commentThreadCache[key] = this._commentThreadCache[key].filter(t => t !== existing);
+					if (existing !== newThread) {
+						existing.dispose();
+					}
+				}
 			} else {
 				const openPREditors = await this.getPREditors(vscode.window.visibleTextEditors);
 				const matchingEditor = openPREditors.find(editor => {
