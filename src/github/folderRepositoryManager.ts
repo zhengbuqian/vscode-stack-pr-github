@@ -188,6 +188,8 @@ export class FolderRepositoryManager extends Disposable {
 	private _activePullRequest?: PullRequestModel;
 	private _activeIssue?: IssueModel;
 	private _githubRepositories: GitHubRepository[];
+	private readonly _retainedGitHubRepositories = new Map<GitHubRepository, number>();
+	private _nextRepositoryIndex = 0;
 	private _allGitHubRemotes: GitHubRemote[] = [];
 	private _mentionableUsers?: { [key: string]: IAccount[] };
 	private _fetchMentionableUsersPromise?: Promise<{ [key: string]: IAccount[] }>;
@@ -576,7 +578,8 @@ export class FolderRepositoryManager extends Disposable {
 				this._onDidChangePullRequestsEvents.push(repo.onDidChangePullRequests(e => this._onDidChangeAnyPullRequests.fire(e)));
 				this._onDidChangePullRequestsEvents.push(repo.onDidAddPullRequest(e => this._onDidAddPullRequest.fire(e)));
 			}
-			oldRepositories.filter(old => this._githubRepositories.indexOf(old) < 0).forEach(repo => repo.dispose());
+			oldRepositories.filter(old => !this._githubRepositories.includes(old) && !this._retainedGitHubRepositories.has(old))
+				.forEach(repo => repo.dispose());
 
 			const repositoriesAdded =
 				oldRepositories.length !== this._githubRepositories.length ?
@@ -1674,7 +1677,7 @@ export class FolderRepositoryManager extends Disposable {
 			if (!upstream) {
 				const remote = (await this.getAllGitHubRemotes()).find(r => r.remoteName === upstreamRef.remote);
 				if (remote) {
-					return this.createAndAddGitHubRepository(remote, this._credentialStore);
+					return this.createGitHubRepository(remote, this._credentialStore);
 				}
 
 				Logger.error(`The remote '${upstreamRef.remote}' is not a GitHub repository.`, this.id);
@@ -2945,7 +2948,7 @@ export class FolderRepositoryManager extends Disposable {
 	}
 
 	public findExistingGitHubRepository(remote: { owner: string, repositoryName: string, remoteName?: string }): GitHubRepository | undefined {
-		return this._githubRepositories.find(
+		return [...this._githubRepositories, ...this._retainedGitHubRepositories.keys()].find(
 			r =>
 				(r.remote.owner.toLowerCase() === remote.owner.toLowerCase())
 				&& (r.remote.repositoryName.toLowerCase() === remote.repositoryName.toLowerCase())
@@ -2954,7 +2957,7 @@ export class FolderRepositoryManager extends Disposable {
 	}
 
 	private async createAndAddGitHubRepository(remote: Remote, credentialStore: CredentialStore, silent?: boolean) {
-		const repoId = this._id + (this._githubRepositories.length * 0.1);
+		const repoId = this._id + (this._nextRepositoryIndex++ * 0.1);
 		const repo = new GitHubRepository(repoId, GitHubRemote.remoteAsGitHub(remote, await this._githubManager.isGitHub(remote.gitProtocol.normalizeUri()!)), this.repository.rootUri, credentialStore, this.telemetry, silent);
 		this._githubRepositories.push(repo);
 		return repo;
@@ -2973,15 +2976,49 @@ export class FolderRepositoryManager extends Disposable {
 	}
 
 	private _createGitHubRepositoryBulkhead = bulkhead(1, 300);
-	async createGitHubRepository(remote: Remote, credentialStore: CredentialStore, silent?: boolean, ignoreRemoteName: boolean = false): Promise<GitHubRepository> {
+
+	private async getOrCreateGitHubRepository(remote: Remote, credentialStore: CredentialStore, silent?: boolean, ignoreRemoteName: boolean = false): Promise<GitHubRepository> {
 		const repoKey = `${remote.owner.toLowerCase()}/${remote.repositoryName.toLowerCase()}`;
 		if (this._inaccessibleRepos.has(repoKey)) {
 			throw new Error(`Repository ${remote.owner}/${remote.repositoryName} is not accessible.`);
 		}
-		// Use a bulkhead/semaphore to ensure that we don't create multiple GitHubRepositories for the same remote at the same time.
+		return this.findExistingGitHubRepository({ owner: remote.owner, repositoryName: remote.repositoryName, remoteName: ignoreRemoteName ? undefined : remote.remoteName }) ??
+			await this.createAndAddGitHubRepository(remote, credentialStore, silent);
+	}
+
+	async createGitHubRepository(remote: Remote, credentialStore: CredentialStore, silent?: boolean, ignoreRemoteName: boolean = false): Promise<GitHubRepository> {
+		// All creation paths must share this lock, including branch upstream discovery.
+		return this._createGitHubRepositoryBulkhead.execute(() =>
+			this.getOrCreateGitHubRepository(remote, credentialStore, silent, ignoreRemoteName));
+	}
+
+	async acquireGitHubRepository(remote: Remote): Promise<{ githubRepository: GitHubRepository; reference: vscode.Disposable }> {
 		return this._createGitHubRepositoryBulkhead.execute(async () => {
-			return this.findExistingGitHubRepository({ owner: remote.owner, repositoryName: remote.repositoryName, remoteName: ignoreRemoteName ? undefined : remote.remoteName }) ??
-				await this.createAndAddGitHubRepository(remote, credentialStore, silent);
+			const githubRepository = this.findExistingGitHubRepository(remote) ??
+				await this.getOrCreateGitHubRepository(remote, this._credentialStore);
+			if (this.isDisposed) {
+				githubRepository.dispose();
+				throw new Error('Repository manager has been disposed.');
+			}
+			// Acquire before returning to the caller so a concurrent repository refresh cannot dispose it.
+			this._retainedGitHubRepositories.set(githubRepository, (this._retainedGitHubRepositories.get(githubRepository) ?? 0) + 1);
+			return {
+				githubRepository,
+				reference: new vscode.Disposable(() => {
+					const count = this._retainedGitHubRepositories.get(githubRepository);
+					if (count === undefined) {
+						return;
+					}
+					if (count > 1) {
+						this._retainedGitHubRepositories.set(githubRepository, count - 1);
+					} else {
+						this._retainedGitHubRepositories.delete(githubRepository);
+						if (!this._githubRepositories.includes(githubRepository)) {
+							githubRepository.dispose();
+						}
+					}
+				}),
+			};
 		});
 	}
 
@@ -2998,7 +3035,7 @@ export class FolderRepositoryManager extends Disposable {
 		const gitRemotes = await parseRepositoryRemotesAsync(this.repository);
 		const gitRemote = gitRemotes.find(r => r.owner === owner && r.repositoryName === repositoryName);
 		const uri = gitRemote?.url ?? `https://github.com/${owner}/${repositoryName}`;
-		const repo = await this.createAndAddGitHubRepository(new Remote(gitRemote?.remoteName ?? repositoryName, uri, new Protocol(uri)), this._credentialStore);
+		const repo = await this.createGitHubRepository(new Remote(gitRemote?.remoteName ?? repositoryName, uri, new Protocol(uri)), this._credentialStore, undefined, true);
 		let reason: string;
 		try {
 			await repo.getMetadata();
@@ -3259,6 +3296,10 @@ export class FolderRepositoryManager extends Disposable {
 	override dispose() {
 		this._onDidDispose.fire();
 		super.dispose();
+		for (const repository of this._retainedGitHubRepositories.keys()) {
+			repository.dispose();
+		}
+		this._retainedGitHubRepositories.clear();
 	}
 }
 

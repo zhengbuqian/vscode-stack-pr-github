@@ -8,7 +8,7 @@ import { CategoryTreeNode } from './categoryNode';
 import { Repository } from '../../api/api';
 import { COPILOT_ACCOUNTS } from '../../common/comment';
 import { getCommentingRanges } from '../../common/commentingRanges';
-import { InMemFileChange, SlimFileChange } from '../../common/file';
+import { GitChangeType, InMemFileChange, SlimFileChange } from '../../common/file';
 import Logger from '../../common/logger';
 import { FILE_LIST_LAYOUT, LIST_HORIZONTAL_SCROLLING, PR_SETTINGS_NAMESPACE, PULL_REQUEST_AVATAR_DISPLAY, PullRequestAvatarDisplay, SHOW_PULL_REQUEST_NUMBER_IN_TREE, WORKBENCH } from '../../common/settingKeys';
 import { createPRNodeUri, DataUri, fromPRUri, Schemes } from '../../common/uri';
@@ -420,8 +420,20 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 
 			const fileChange = (await this.getFileChanges()).find(change => change.changeModel.fileName === params.fileName);
 
-			if (!fileChange || fileChange instanceof RemoteFileChangeNode) {
+			if (!fileChange) {
 				return undefined;
+			}
+			if (fileChange instanceof RemoteFileChangeNode) {
+				// GitHub can omit the patch for a large added/deleted file opened by Stack.
+				// Its non-empty side consists entirely of changed lines and needs no local Git diff.
+				const wholeFileChanged = (fileChange.status === GitChangeType.ADD && !params.isBase)
+					|| (fileChange.status === GitChangeType.DELETE && params.isBase);
+				if (!this._options.forceRemote || !wholeFileChanged) {
+					return undefined;
+				}
+				const lastLine = document.lineCount - 1;
+				const endLine = document.lineAt(lastLine).text.length === 0 ? lastLine - 1 : lastLine;
+				return { ranges: endLine < 0 ? [] : [new vscode.Range(0, 0, endLine, 0)], enableFileComments: true };
 			}
 
 			return { ranges: getCommentingRanges(await fileChange.changeModel.diffHunks(), params.isBase, PRNode.ID), enableFileComments: true };

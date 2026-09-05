@@ -9,6 +9,8 @@ import { StackPullRequestResolver } from './stackPullRequestResolver';
 import { GitChangeType } from '../common/file';
 import { Disposable, disposeAll } from '../common/lifecycle';
 import Logger from '../common/logger';
+import { Protocol } from '../common/protocol';
+import { Remote } from '../common/remote';
 import { FolderRepositoryManager } from '../github/folderRepositoryManager';
 import { RepositoriesManager } from '../github/repositoriesManager';
 import { NotificationsManager } from '../notifications/notificationsManager';
@@ -175,7 +177,14 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		}
 
 		try {
-			const repositories = await Promise.all(entries.map(entry => this.findRepository(entry)));
+			const repositories = await Promise.all(entries.map(async entry => {
+				try {
+					return await this.findRepository(entry);
+				} catch (e) {
+					Logger.error(`Failed to restore ${this.describeEntry(entry)}: ${e}`, StackPullRequestsTreeDataProvider.ID);
+					return undefined;
+				}
+			}));
 			const entryNodes = entries.flatMap((entry, index) => {
 				const repository = repositories[index];
 				if (!repository) {
@@ -189,6 +198,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 					this._resolver,
 					this._notificationsManager,
 					this._prsTreeModel,
+					repository.reference,
 				)];
 			});
 			Logger.appendLine(
@@ -409,7 +419,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 					if (origin) {
 						finish({ repository: origin, pullRequestNumber });
 					} else {
-						quickPick.prompt = vscode.l10n.t('No unambiguous origin remote is available. Choose a remote from the list.');
+						quickPick.placeholder = vscode.l10n.t('No unambiguous origin remote is available. Choose a remote from the list.');
 					}
 					return;
 				}
@@ -424,7 +434,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		});
 	}
 
-	private async findRepository(entry: StackPullRequestEntry): Promise<AvailableRepository | undefined> {
+	private async findRepository(entry: StackPullRequestEntry): Promise<(AvailableRepository & { reference: vscode.Disposable }) | undefined> {
 		const availableRemotes: string[] = [];
 		for (const folderManager of this._reposManager.folderManagers) {
 			let remotes;
@@ -452,34 +462,14 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 				continue;
 			}
 
-			const workspaceRepository = folderManager.findExistingGitHubRepository({
-				owner: remote.owner,
-				repositoryName: remote.repositoryName,
-				remoteName: remote.remoteName,
-			}) ?? await folderManager.createGitHubRepositoryFromOwnerName(remote.owner, remote.repositoryName);
-			if (!workspaceRepository) {
-				Logger.warn(
-					`Matched local remote ${remote.remoteName} but could not create its GitHub repository while restoring ${this.describeEntry(entry)}`,
-					StackPullRequestsTreeDataProvider.ID,
-				);
-				return undefined;
-			}
-
 			const isWorkspaceRepository = entry.owner.toLowerCase() === remote.owner.toLowerCase()
 				&& entry.repositoryName.toLowerCase() === remote.repositoryName.toLowerCase();
-			const githubRepository = isWorkspaceRepository
-				? workspaceRepository
-				: folderManager.findExistingGitHubRepository({
-					owner: entry.owner,
-					repositoryName: entry.repositoryName,
-				}) ?? await folderManager.createGitHubRepositoryFromOwnerName(entry.owner, entry.repositoryName);
-			if (!githubRepository) {
-				Logger.warn(
-					`Could not create target GitHub repository ${entry.owner}/${entry.repositoryName} while restoring ${this.describeEntry(entry)}`,
-					StackPullRequestsTreeDataProvider.ID,
-				);
-				return undefined;
-			}
+			const targetUrl = `https://github.com/${entry.owner}/${entry.repositoryName}`;
+			const targetRemote = isWorkspaceRepository ? remote : remotes.find(candidate =>
+				candidate.owner.toLowerCase() === entry.owner.toLowerCase()
+				&& candidate.repositoryName.toLowerCase() === entry.repositoryName.toLowerCase(),
+			) ?? new Remote(entry.repositoryName, targetUrl, new Protocol(targetUrl));
+			const { githubRepository, reference } = await folderManager.acquireGitHubRepository(targetRemote);
 
 			Logger.appendLine(
 				`Restored ${this.describeEntry(entry)} through local remote ${remote.remoteName} in ${folderManager.repository.rootUri.fsPath}`,
@@ -488,6 +478,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 			return {
 				folderManager,
 				githubRepository,
+				reference,
 				workspaceOwner: remote.owner,
 				workspaceRepositoryName: remote.repositoryName,
 				workspaceRemoteName: remote.remoteName,

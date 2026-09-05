@@ -79,8 +79,17 @@ export class StackPullRequestEntryNode extends TreeNode implements vscode.TreeIt
 		private readonly _resolver: StackPullRequestResolver,
 		private readonly _notificationsManager: NotificationsManager,
 		private readonly _prsTreeModel: PrsTreeModel,
+		repositoryReference: vscode.Disposable,
 	) {
 		super(parent);
+		this._register(new vscode.Disposable(() => {
+			// An obsolete load must finish releasing its PR nodes before releasing the repository.
+			if (this._loadPromise) {
+				void this._loadPromise.then(() => repositoryReference.dispose(), () => repositoryReference.dispose());
+			} else {
+				repositoryReference.dispose();
+			}
+		}));
 		this.id = `stack-pr-entry:${entry.owner.toLowerCase()}/${entry.repositoryName.toLowerCase()}#${entry.pullRequestNumber}`;
 		this.label = vscode.l10n.t('Pull Request {0}/{1} #{2}', entry.owner, entry.repositoryName, entry.pullRequestNumber);
 	}
@@ -157,6 +166,9 @@ export class StackPullRequestEntryNode extends TreeNode implements vscode.TreeIt
 				pullRequests = stackPullRequests.map(member => ({ pullRequest: member!, children: [] }));
 			}
 
+			if (this.isDisposed) {
+				return [];
+			}
 			const pullRequestNodes = pullRequests.map(node => new StackPullRequestNode(
 				this,
 				node,
@@ -165,6 +177,10 @@ export class StackPullRequestEntryNode extends TreeNode implements vscode.TreeIt
 				this._prsTreeModel,
 			));
 			await Promise.all(pullRequestNodes.map(node => node.preload()));
+			if (this.isDisposed) {
+				disposeAll(pullRequestNodes);
+				return [];
+			}
 			this._pullRequestCount = pullRequestNodes.length;
 			this._children = pullRequestNodes;
 			Logger.appendLine(
