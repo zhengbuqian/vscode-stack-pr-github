@@ -248,6 +248,9 @@ export class StackPullRequestNode extends PRNode {
 
 	private async loadChildren(): Promise<TreeNode[]> {
 		try {
+			// Repository refreshes reuse the PR model, including its initialized comment cache.
+			// Fetch comments before creating the new UI controller so it starts with current data.
+			await this.pullRequestModel.initializeReviewThreadCache();
 			const displayedChanges = await super.getChildren();
 			const fileCount = (await this.getFileChanges()).length;
 			Logger.appendLine(

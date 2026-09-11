@@ -122,7 +122,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 			}
 
 			if (this.pullRequestModel.showChangesSinceReview !== undefined) {
-				this.reopenNewPrDiffs(this.pullRequestModel);
+				await this.reopenNewPrDiffs(this.pullRequestModel);
 			}
 
 			this._children = result;
@@ -155,6 +155,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 	}
 
 	public async reopenNewPrDiffs(pullRequest: PullRequestModel) {
+		const reopen: PromiseLike<unknown>[] = [];
 		let hasOpenDiff: boolean = false;
 		vscode.window.tabGroups.all.map(tabGroup => {
 			tabGroup.tabs.map(tab => {
@@ -173,16 +174,31 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 							originalParams?.prNumber === pullRequest.number &&
 							modifiedParams?.prNumber === pullRequest.number &&
 							localChange.fileName === modifiedParams.fileName &&
-							newLocalChangeParams?.headCommit !== modifiedParams.headCommit
+							(!this._options.forceRemote || (newLocalChangeParams?.remoteName === modifiedParams.remoteName
+								&& localChange.changeModel.filePath.path === tab.input.modified.path)) &&
+							(newLocalChangeParams?.headCommit !== modifiedParams.headCommit
+								|| (this._options.forceRemote && newLocalChangeParams?.baseCommit !== modifiedParams.baseCommit))
 						) {
 							hasOpenDiff = true;
-							vscode.window.tabGroups.close(tab).then(_ => localChange.openDiff(this._folderReposManager, { preview: tab.isPreview }));
+							if (!this._options.forceRemote) {
+								reopen.push(vscode.window.tabGroups.close(tab).then(_ => localChange.openDiff(this._folderReposManager, { preview: tab.isPreview })));
+								break;
+							}
+							reopen.push((async () => {
+								const command = await localChange.getOpenDiffCommand(this._folderReposManager, {
+									preview: tab.isPreview, viewColumn: tabGroup.viewColumn, preserveFocus: !tab.isActive,
+								});
+								if (await vscode.window.tabGroups.close(tab)) {
+									await vscode.commands.executeCommand(command.command, ...(command.arguments ?? []));
+								}
+							})());
 							break;
 						}
 					}
 				}
 			});
 		});
+		await Promise.all(reopen);
 		if (pullRequest.showChangesSinceReview && !hasOpenDiff && this._fileChanges && this._fileChanges.length && !pullRequest.isActive) {
 			this._fileChanges[0].openDiff(this._folderReposManager, { preview: true });
 		}

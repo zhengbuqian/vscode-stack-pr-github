@@ -66,7 +66,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		}));
 		this._register(this._onDidChangeTreeData);
 		this._register(this._view.onDidChangeCheckboxState(e => TreeUtils.processCheckboxUpdates(e, this._view.selection)));
-		this._register(vscode.commands.registerCommand('stackPr.refresh', () => this.refresh()));
+		this._register(vscode.commands.registerCommand('stackPr.refresh', () => this.refreshFromGitHub()));
 		this._register(vscode.commands.registerCommand('stackPr.add', () => this.addEntry()));
 		this._register(vscode.commands.registerCommand('stackPr.refreshEntry', (node: StackPullRequestEntryNode) => this.refreshEntry(node)));
 		this._register(vscode.commands.registerCommand('stackPr.removeEntry', (node: StackPullRequestEntryNode) => this.removeEntry(node)));
@@ -103,6 +103,17 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		disposeAll(this._children);
 		this._children = [];
 		this._onDidChangeTreeData.fire();
+	}
+
+	private async refreshFromGitHub(): Promise<void> {
+		await vscode.window.withProgress({
+			location: { viewId: 'stackPr:github' },
+			title: vscode.l10n.t('Refreshing pull requests from GitHub'),
+		}, async () => {
+			this.refresh();
+			await this.getChildren();
+		});
+		void vscode.window.showInformationMessage(vscode.l10n.t('Stack Pull Requests refresh complete.'));
 	}
 
 	async reveal(element: TreeNode, options?: { select?: boolean; focus?: boolean; expand?: boolean | number }): Promise<void> {
@@ -312,6 +323,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		}
 		await node.reload();
 		this._onDidChangeTreeData.fire(node);
+		void vscode.window.showInformationMessage(vscode.l10n.t('Stack Pull Requests refresh complete.'));
 	}
 
 	private async removeEntry(node: StackPullRequestEntryNode | undefined): Promise<void> {
