@@ -20,19 +20,20 @@ export interface ResolvedStackPullRequests {
 export class StackPullRequestResolver {
 	private static readonly ID = 'StackPullRequestResolver';
 
-	async resolve(activePullRequest: PullRequestModel): Promise<ResolvedStackPullRequests | undefined> {
+	async resolve(activePullRequest: PullRequestModel, throwOnError = false): Promise<ResolvedStackPullRequests | undefined> {
 		Logger.appendLine(`Resolving stack from active PR #${activePullRequest.number}`, StackPullRequestResolver.ID);
 		const refreshedPullRequest = await activePullRequest.githubRepository.getPullRequest(
 			activePullRequest.number,
 			StackPullRequestResolver.ID,
 		);
+		if (throwOnError && !refreshedPullRequest?.isResolved()) { throw new Error('Failed to resolve Stack PR.'); }
 		if (!refreshedPullRequest?.isResolved() || refreshedPullRequest.state !== GithubItemStateEnum.Open) {
 			return undefined;
 		}
 
-		const root = await this.findRoot(refreshedPullRequest);
+		const root = await this.findRoot(refreshedPullRequest, throwOnError);
 		const visited = new Set<string>();
-		const graph = await this.buildGraph(root, visited);
+		const graph = await this.buildGraph(root, visited, throwOnError);
 		Logger.appendLine(`Resolved stack root #${root.number} with ${visited.size} PRs`, StackPullRequestResolver.ID);
 		return { root: graph, size: visited.size };
 	}
@@ -53,7 +54,7 @@ export class StackPullRequestResolver {
 			&& a.ref === b.ref;
 	}
 
-	private async findRoot(activePullRequest: PullRequestModel): Promise<PullRequestModel> {
+	private async findRoot(activePullRequest: PullRequestModel, throwOnError: boolean): Promise<PullRequestModel> {
 		let current = activePullRequest;
 		const visited = new Set<string>([this.pullRequestKey(current)]);
 
@@ -61,7 +62,7 @@ export class StackPullRequestResolver {
 			if (!current.base?.ref || !current.base?.owner) {
 				break;
 			}
-			const parent = await current.githubRepository.getPullRequestForBranch(current.base.ref, current.base.owner);
+			const parent = await current.githubRepository.getPullRequestForBranch(current.base.ref, current.base.owner, throwOnError);
 			if (!parent?.isResolved()
 				|| parent.state !== GithubItemStateEnum.Open
 				|| !this.refsEqual(parent.head, current.base)) {
@@ -84,6 +85,7 @@ export class StackPullRequestResolver {
 	private async buildGraph(
 		pullRequest: PullRequestModel,
 		visited: Set<string>,
+		throwOnError: boolean,
 	): Promise<StackPullRequestGraphNode> {
 		const key = this.pullRequestKey(pullRequest);
 		visited.add(key);
@@ -94,8 +96,9 @@ export class StackPullRequestResolver {
 
 		let candidates: PullRequestModel[] = [];
 		try {
-			candidates = await pullRequest.githubRepository.getOpenPullRequestsForBase(pullRequest.head.ref);
+			candidates = await pullRequest.githubRepository.getOpenPullRequestsForBase(pullRequest.head.ref, throwOnError);
 		} catch (e) {
+			if (throwOnError) { throw e; }
 			Logger.warn(
 				`Failed to fetch open pull requests for base branch ${pullRequest.head.ref}: ${e}`,
 				StackPullRequestResolver.ID,
@@ -115,7 +118,7 @@ export class StackPullRequestResolver {
 				continue;
 			}
 			Logger.appendLine(`Found child edge #${pullRequest.number} -> #${candidate.number}`, StackPullRequestResolver.ID);
-			children.push(await this.buildGraph(candidate, visited));
+			children.push(await this.buildGraph(candidate, visited, throwOnError));
 		}
 
 		return { pullRequest, children };

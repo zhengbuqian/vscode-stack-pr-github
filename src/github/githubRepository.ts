@@ -257,14 +257,14 @@ export class GitHubRepository extends Disposable {
 
 	private _ensureCommentsControllerPromise: Promise<void> | undefined;
 
-	public async ensureCommentsController(): Promise<void> {
+	public async ensureCommentsController(localOnly = false): Promise<void> {
 		if (this.commentsController) {
 			return;
 		}
 		if (!this._ensureCommentsControllerPromise) {
 			this._ensureCommentsControllerPromise = (async () => {
 				try {
-					await this.ensure();
+					if (!localOnly) { await this.ensure(); }
 					if (this.commentsController) {
 						return;
 					}
@@ -744,7 +744,7 @@ export class GitHubRepository extends Disposable {
 		return undefined;
 	}
 
-	async getOpenPullRequestsForBase(branch: string): Promise<PullRequestModel[]> {
+	async getOpenPullRequestsForBase(branch: string, throwOnError = false): Promise<PullRequestModel[]> {
 		let remote: GitHubRemote | undefined;
 		try {
 			Logger.debug(`Fetch open pull requests for base branch ${branch} - enter`, this.id);
@@ -769,6 +769,7 @@ export class GitHubRepository extends Disposable {
 			return models;
 		} catch (e) {
 			Logger.error(`Fetching open pull requests for base branch ${branch} failed: ${e}`, this.id);
+			if (throwOnError) { throw e; }
 			if (e.status === 404) {
 				vscode.window.showWarningMessage(
 					`Fetching pull requests for remote '${remote?.remoteName}' failed, please check if the repository ${remote?.owner}/${remote?.repositoryName} is valid.`,
@@ -846,7 +847,7 @@ export class GitHubRepository extends Disposable {
 		return undefined;
 	}
 
-	async getPullRequestForBranch(branch: string, headOwner: string): Promise<PullRequestModel | undefined> {
+	async getPullRequestForBranch(branch: string, headOwner: string, throwOnError = false): Promise<PullRequestModel | undefined> {
 		let remote: GitHubRemote | undefined;
 		try {
 			Logger.debug(`Fetch pull requests for branch - enter`, this.id);
@@ -873,8 +874,10 @@ export class GitHubRepository extends Disposable {
 				const mostRecentOrOpenPr = prs.find(pr => pr.state.toLowerCase() === 'open') ?? prs[0];
 				return this.createOrUpdatePullRequestModel(mostRecentOrOpenPr);
 			}
+			if (throwOnError) { throw new Error('Missing repository in branch query.'); }
 		} catch (e) {
 			Logger.error(`Fetching pull request for branch failed: ${e}`, this.id);
+			if (throwOnError) { throw e; }
 			if (e.status === 404) {
 				// not found
 				vscode.window.showWarningMessage(
@@ -1296,6 +1299,10 @@ export class GitHubRepository extends Disposable {
 		}
 	}
 
+	createDetachedPullRequestModel(pullRequest: PullRequest): PullRequestModel {
+		return new PullRequestModel(this._credentialStore, this.telemetry, this, this.remote, pullRequest);
+	}
+
 	createOrUpdatePullRequestModel(pullRequest: PullRequest, silent: boolean = false): PullRequestModel {
 		let model = this._pullRequestModelsByNumber.get(pullRequest.number)?.model;
 		if (model) {
@@ -1500,7 +1507,7 @@ export class GitHubRepository extends Disposable {
 	 * @param filePath The file path
 	 * @param ref The commit
 	 */
-	async getFile(filePath: string, ref: string): Promise<Uint8Array> {
+	async getFile(filePath: string, ref: string, throwOnMissing = false): Promise<Uint8Array> {
 		const { octokit, remote } = await this.ensure();
 		let contents: string = '';
 		let fileContent: { data: { content: string; encoding: string; sha: string } };
@@ -1522,7 +1529,7 @@ export class GitHubRepository extends Disposable {
 			contents = fileContent.data.content ?? '';
 		} catch (e) {
 			Logger.error(`Unable to fetch file ${filePath}: ${e}`, this.id);
-			if (e.status === 404) {
+			if (e.status === 404 && !throwOnMissing) {
 				return new Uint8Array(0);
 			}
 			throw e;

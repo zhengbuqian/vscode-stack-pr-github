@@ -11,7 +11,7 @@ import { getCommentingRanges } from '../../common/commentingRanges';
 import { GitChangeType, InMemFileChange, SlimFileChange } from '../../common/file';
 import Logger from '../../common/logger';
 import { FILE_LIST_LAYOUT, LIST_HORIZONTAL_SCROLLING, PR_SETTINGS_NAMESPACE, PULL_REQUEST_AVATAR_DISPLAY, PullRequestAvatarDisplay, SHOW_PULL_REQUEST_NUMBER_IN_TREE, WORKBENCH } from '../../common/settingKeys';
-import { createPRNodeUri, DataUri, fromPRUri, Schemes } from '../../common/uri';
+import { createPRNodeUri, DataUri, fromPRUri, PRUriParams, Schemes } from '../../common/uri';
 import { FolderRepositoryManager } from '../../github/folderRepositoryManager';
 import { CopilotWorkingStatus } from '../../github/githubRepository';
 import { GithubItemStateEnum } from '../../github/interface';
@@ -28,6 +28,7 @@ import { PrsTreeModel } from '../prsTreeModel';
 export interface PRNodeOptions {
 	forceRemote?: boolean;
 	appendPullRequestNumber?: boolean;
+	cachedContent?: (params: PRUriParams) => Promise<Uint8Array>;
 }
 
 export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 {
@@ -86,16 +87,17 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 			}
 
 			[, this._fileChanges, ,] = await Promise.all([
-				this.pullRequestModel.initializePullRequestFileViewState(),
+				this._options.cachedContent ? Promise.resolve() : this.pullRequestModel.initializePullRequestFileViewState(),
 				this.resolveFileChangeNodes(),
 				(!this._commentController) ? this.resolvePRCommentController() : new Promise<void>(resolve => resolve()),
-				this.pullRequestModel.validateDraftMode()
+				this._options.cachedContent ? Promise.resolve() : this.pullRequestModel.validateDraftMode()
 			]);
 
 			if (!this._inMemPRContentProvider) {
 				this._inMemPRContentProvider = getInMemPRFileSystemProvider()?.registerTextDocumentContentProvider(
 					this.pullRequestModel.number,
 					this.provideDocumentContent.bind(this),
+					{ rootUri: this._folderReposManager.repository.rootUri, remoteName: this.pullRequestModel.remote.remoteName },
 				);
 				if (this._inMemPRContentProvider) {
 					this._register(this._inMemPRContentProvider);
@@ -210,7 +212,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 			return;
 		}
 
-		await this.pullRequestModel.githubRepository.ensureCommentsController();
+		await this.pullRequestModel.githubRepository.ensureCommentsController(!!this._options.cachedContent);
 		this._commentController = this.pullRequestModel.githubRepository.commentsController!;
 
 		this._register(this.pullRequestModel.githubRepository.commentsHandler!.registerCommentingRangeProvider(
@@ -260,7 +262,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 			this.pullRequestModel = this._folderReposManager.activePullRequest;
 			rawChanges.push(...this._folderReposManager.activePullRequest.fileChanges.values());
 		} else {
-			rawChanges.push(...await this.pullRequestModel.getFileChangesInfo());
+			rawChanges.push(...(this._options.cachedContent ? this.pullRequestModel.fileChanges.values() : await this.pullRequestModel.getFileChangesInfo()));
 		}
 
 		// Merge base is set as part of getFileChangesInfo
@@ -300,7 +302,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 		if (!DataUri.isGitHubDotComAvatar(this.pullRequestModel.author.avatarUrl)) {
 			return new vscode.ThemeIcon('github');
 		}
-		return (await DataUri.avatarCirclesAsImageDataUris(this._folderReposManager.context, [this.pullRequestModel.author], 16, 16))[0]
+		return (await DataUri.avatarCirclesAsImageDataUris(this._folderReposManager.context, [this.pullRequestModel.author], 16, 16, !!this._options.cachedContent))[0]
 			?? new vscode.ThemeIcon('github');
 	}
 
@@ -327,6 +329,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 	}
 
 	private async _getIcon(): Promise<vscode.Uri | vscode.ThemeIcon | { light: vscode.Uri; dark: vscode.Uri }> {
+		if (this._options.cachedContent) { return this._getBaseIcon(); }
 		const copilotWorkingStatus = await this.pullRequestModel.copilotWorkingStatus();
 		const theme = this._folderReposManager.themeWatcher.themeData;
 		if (copilotWorkingStatus === CopilotWorkingStatus.NotCopilotIssue) {
@@ -355,7 +358,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 
 	private _getLabel(): string {
 		const currentBranchIsForThisPR = this.pullRequestModel.equals(this._folderReposManager.activePullRequest);
-		const { title, number, author, isDraft } = this.pullRequestModel;
+		const { title, number, author, isDraft, state } = this.pullRequestModel;
 		let label = '';
 
 		if (currentBranchIsForThisPR) {
@@ -384,7 +387,9 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 		}
 
 		const iconMode = vscode.workspace.getConfiguration(PR_SETTINGS_NAMESPACE).get<PullRequestAvatarDisplay>(PULL_REQUEST_AVATAR_DISPLAY, 'author');
-		if (isDraft && iconMode !== 'state') {
+		if (state === GithubItemStateEnum.Merged) {
+			label = `~~${label}~~`;
+		} else if (isDraft && iconMode !== 'state') {
 			label = `_${label}_`;
 		}
 
@@ -464,6 +469,8 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider2 
 		if (!params) {
 			return '';
 		}
+
+		if (this._options.cachedContent) { return this._options.cachedContent(params); }
 
 		const fileChange = (await this.getFileChanges()).find(
 			contentChange => contentChange.changeModel.fileName === params.fileName,

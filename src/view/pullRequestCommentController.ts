@@ -144,7 +144,7 @@ export class PullRequestCommentController extends CommentControllerBase implemen
 	private async addThreadsForEditors(documents: vscode.TextDocument[]): Promise<void> {
 		const reviewThreads = this.pullRequestModel.reviewThreadsCache;
 		const threadsByPath = groupBy(reviewThreads, thread => thread.path);
-		const currentUser = await this._folderRepoManager.getCurrentUser();
+		const currentUser = this.pullRequestModel.snapshotCurrentUser ?? await this._folderRepoManager.getCurrentUser();
 		for (const document of documents) {
 			const { fileName, isBase } = fromPRUri(document.uri)!;
 			const cacheKey = this.getCommentThreadCacheKey(fileName, isBase);
@@ -279,7 +279,7 @@ export class PullRequestCommentController extends CommentControllerBase implemen
 						range,
 						thread,
 						this._commentController,
-						(await this._folderRepoManager.getCurrentUser()),
+						(this.pullRequestModel.snapshotCurrentUser ?? await this._folderRepoManager.getCurrentUser()),
 						this._githubRepositories
 					);
 				}

@@ -1343,6 +1343,7 @@ export class ReviewManager extends Disposable {
 
 					return provideDocumentContentForChangeModel(this._folderRepoManager, pr, params, fileChange);
 				},
+				{ rootUri: this._folderRepoManager.repository.rootUri, remoteName: pr.remote.remoteName },
 			);
 		} catch (e) {
 			Logger.error(`Failed to register in mem content provider: ${e}`, this.id);

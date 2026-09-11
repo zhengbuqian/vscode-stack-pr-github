@@ -17,8 +17,14 @@ import { FolderRepositoryManager, ReposManagerState } from '../github/folderRepo
 import { IResolvedPullRequestModel, PullRequestModel } from '../github/pullRequestModel';
 import { RepositoriesManager } from '../github/repositoriesManager';
 
+let stackContentProvider: ((uri: vscode.Uri) => Promise<Uint8Array | undefined>) | undefined;
+export function registerStackContentProvider(provider: (uri: vscode.Uri) => Promise<Uint8Array | undefined>): vscode.Disposable {
+	stackContentProvider = provider;
+	return new vscode.Disposable(() => { if (stackContentProvider === provider) { stackContentProvider = undefined; } });
+}
+
 export class InMemPRFileSystemProvider extends RepositoryFileSystemProvider {
-	private _prFileChangeContentProviders: { [key: number]: (uri: vscode.Uri) => Promise<string | Uint8Array> } = {};
+	private _prFileChangeContentProviders: { [key: string]: (uri: vscode.Uri) => Promise<string | Uint8Array> } = {};
 
 	constructor(private reposManagers: RepositoriesManager, gitAPI: GitApiImpl, credentialStore: CredentialStore) {
 		super(gitAPI, credentialStore);
@@ -27,12 +33,16 @@ export class InMemPRFileSystemProvider extends RepositoryFileSystemProvider {
 	registerTextDocumentContentProvider(
 		prNumber: number,
 		provider: (uri: vscode.Uri) => Promise<string | Uint8Array>,
+		scope: { rootUri: vscode.Uri; remoteName: string },
 	): vscode.Disposable {
-		this._prFileChangeContentProviders[prNumber] = provider;
+		const key = JSON.stringify([scope.rootUri.toString(), scope.remoteName, prNumber]);
+		this._prFileChangeContentProviders[key] = provider;
 
 		return {
 			dispose: () => {
-				delete this._prFileChangeContentProviders[prNumber];
+				if (this._prFileChangeContentProviders[key] === provider) {
+					delete this._prFileChangeContentProviders[key];
+				}
 			},
 		};
 	}
@@ -87,6 +97,9 @@ export class InMemPRFileSystemProvider extends RepositoryFileSystemProvider {
 		if (!repo) {
 			return;
 		}
+		// The initial Stack lookup may have run before folder managers existed.
+		const cached = await stackContentProvider?.(uri);
+		if (cached !== undefined) { return cached; }
 		const pr = await folderRepositoryManager.resolvePullRequest(repo.remote.owner, repo.remote.repositoryName, prUriParams.prNumber);
 		if (!pr) {
 			return;
@@ -112,11 +125,13 @@ export class InMemPRFileSystemProvider extends RepositoryFileSystemProvider {
 			}
 
 			return provideDocumentContentForChangeModel(folderRepositoryManager, pr, params, fileChange);
-		});
+		}, { rootUri: folderRepositoryManager.repository.rootUri, remoteName: repo.remote.remoteName });
 	}
 
 	private async readFileWithProvider(uri: vscode.Uri, prNumber: number): Promise<Uint8Array | undefined> {
-		const provider = this._prFileChangeContentProviders[prNumber];
+		const rootUri = this.reposManagers.getManagerForFile(uri)?.repository.rootUri;
+		const key = JSON.stringify([rootUri?.toString(), fromPRUri(uri)?.remoteName, prNumber]);
+		const provider = this._prFileChangeContentProviders[key];
 		if (provider) {
 			const content = await provider(uri);
 			if (typeof content === 'string') {
@@ -137,7 +152,13 @@ export class InMemPRFileSystemProvider extends RepositoryFileSystemProvider {
 			return providerResult;
 		}
 
-		await this.tryRegisterNewProvider(uri, prUriParams);
+		// Restored tabs can request content before Stack nodes have registered their providers.
+		// Wait for disk restoration before considering the network fallback.
+		const stackContent = await stackContentProvider?.(uri);
+		if (stackContent !== undefined) { return stackContent; }
+
+		const cached = await this.tryRegisterNewProvider(uri, prUriParams);
+		if (cached !== undefined) { return cached; }
 		return (await this.readFileWithProvider(uri, prUriParams.prNumber)) ?? new TextEncoder().encode('');
 	}
 }

@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { registerStackContentProvider } from './inMemPRContentProvider';
 import { PrsTreeModel } from './prsTreeModel';
 import { StackPullRequestResolver } from './stackPullRequestResolver';
 import { GitChangeType } from '../common/file';
@@ -65,6 +66,14 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 			manageCheckboxStateManually: true,
 		}));
 		this._register(this._onDidChangeTreeData);
+		this._register(registerStackContentProvider(async uri => {
+			for (const node of await this.getChildren()) {
+				if (node instanceof StackPullRequestEntryNode && node.containsDocument(uri)) {
+					return node.readCachedContent(uri);
+				}
+			}
+			return undefined;
+		}));
 		this._register(this._view.onDidChangeCheckboxState(e => TreeUtils.processCheckboxUpdates(e, this._view.selection)));
 		this._register(vscode.commands.registerCommand('stackPr.refresh', () => this.refreshFromGitHub()));
 		this._register(vscode.commands.registerCommand('stackPr.add', () => this.addEntry()));
@@ -106,14 +115,23 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	}
 
 	private async refreshFromGitHub(): Promise<void> {
+		const failures: string[] = [];
 		await vscode.window.withProgress({
 			location: { viewId: 'stackPr:github' },
 			title: vscode.l10n.t('Refreshing pull requests from GitHub'),
 		}, async () => {
-			this.refresh();
-			await this.getChildren();
+			const entries = (await this.getChildren()).filter((node): node is StackPullRequestEntryNode => node instanceof StackPullRequestEntryNode);
+			await Promise.all(entries.map(async node => {
+				try { await node.reload(); }
+				catch (e) { failures.push(`${node.entry.owner}/${node.entry.repositoryName} #${node.entry.pullRequestNumber}: ${e}`); }
+			}));
+			this._onDidChangeTreeData.fire();
 		});
-		void vscode.window.showInformationMessage(vscode.l10n.t('Stack Pull Requests refresh complete.'));
+		if (failures.length) {
+			void vscode.window.showErrorMessage(vscode.l10n.t('Some stacks could not be refreshed. Their previous caches were kept. {0}', failures.join('; ')));
+		} else {
+			void vscode.window.showInformationMessage(vscode.l10n.t('Stack Pull Requests refresh complete.'));
+		}
 	}
 
 	async reveal(element: TreeNode, options?: { select?: boolean; focus?: boolean; expand?: boolean | number }): Promise<void> {
@@ -210,6 +228,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 					this._notificationsManager,
 					this._prsTreeModel,
 					repository.reference,
+					this._context.globalStorageUri,
 				)];
 			});
 			Logger.appendLine(
@@ -318,12 +337,13 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	}
 
 	private async refreshEntry(node: StackPullRequestEntryNode | undefined): Promise<void> {
-		if (!node) {
-			return;
-		}
-		await node.reload();
-		this._onDidChangeTreeData.fire(node);
-		void vscode.window.showInformationMessage(vscode.l10n.t('Stack Pull Requests refresh complete.'));
+		if (!node) { return; }
+		try {
+			await vscode.window.withProgress({ location: { viewId: 'stackPr:github' } }, () => node.reload());
+			void vscode.window.showInformationMessage(vscode.l10n.t('Stack Pull Requests refresh complete.'));
+		} catch (e) {
+			void vscode.window.showErrorMessage(vscode.l10n.t('Refresh failed. The previous cache was kept. {0}', String(e)));
+		} finally { this._onDidChangeTreeData.fire(node); }
 	}
 
 	private async removeEntry(node: StackPullRequestEntryNode | undefined): Promise<void> {
@@ -332,6 +352,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		}
 		const key = this.entryKey(node.entry);
 		await this.storeEntries((await this.getStoredEntries()).filter(entry => this.entryKey(entry) !== key));
+		await node.removeCache();
 		this.refresh();
 	}
 

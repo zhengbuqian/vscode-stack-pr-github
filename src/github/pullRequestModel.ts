@@ -128,10 +128,20 @@ type TreeDataMode = '100644' | '100755' | '120000';
 
 const BATCH_SIZE = 50;
 
+export interface PullRequestSnapshot {
+	item: PullRequest;
+	mergeBase: string;
+	files: IRawFileChange[];
+	reviewThreads: IReviewThread[];
+	viewed: FileViewedState;
+	hasPendingReview: boolean;
+}
+
 export class PullRequestModel extends IssueModel<PullRequest> implements IPullRequestModel {
 	static override ID = 'PullRequestModel';
 
 	public isDraft?: boolean;
+	public snapshotCurrentUser?: IAccount;
 	public reviewers?: (IAccount | ITeam)[];
 	public localBranchName?: string;
 	public mergeBase?: string;
@@ -189,14 +199,44 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 		this.update(item);
 	}
 
+	public toSnapshot(): PullRequestSnapshot {
+		if (!this.mergeBase || !this._rawFileChangesCache || !this.reviewThreadsCacheReady) {
+			throw new Error(`PR #${this.number} has not finished loading.`);
+		}
+		return JSON.parse(JSON.stringify({
+			item: this.item, mergeBase: this.mergeBase, files: this._rawFileChangesCache,
+			reviewThreads: this.reviewThreadsCache, viewed: this._fileChangeViewedState,
+			hasPendingReview: this.hasPendingReview,
+		}));
+	}
+
+	public async restoreSnapshot(snapshot: PullRequestSnapshot): Promise<void> {
+		this.update(snapshot.item);
+		this.mergeBase = snapshot.mergeBase;
+		this._rawFileChangesCache = snapshot.files;
+		this._fileChanges.clear();
+		for (const change of await parseDiff(snapshot.files, snapshot.mergeBase)) {
+			this._fileChanges.set(change.fileName, change);
+		}
+		this._reviewThreadsCache = snapshot.reviewThreads;
+		this._reviewThreadsCacheInitialized = true;
+		this._fileChangeViewedState = {};
+		this._viewedFiles.clear();
+		this._unviewedFiles.clear();
+		for (const [file, state] of Object.entries(snapshot.viewed)) {
+			this.setFileViewedState(file, state, false);
+		}
+		this.hasPendingReview = snapshot.hasPendingReview;
+	}
+
 	public clear() {
 		this.comments = [];
 		this._reviewThreadsCacheInitialized = false;
 		this._reviewThreadsCache = undefined;
 	}
 
-	public async initializeReviewThreadCache(): Promise<IReviewThread[]> {
-		const threads = await this.getReviewThreads();
+	public async initializeReviewThreadCache(throwOnError = false): Promise<IReviewThread[]> {
+		const threads = await this.getReviewThreads(throwOnError);
 		this._reviewThreadsCacheInitialized = true;
 		return threads;
 	}
@@ -606,7 +646,7 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 	/**
 	 * Query to see if there is an existing review.
 	 */
-	async getPendingReviewId(): Promise<string | undefined> {
+	async getPendingReviewId(throwOnError = false): Promise<string | undefined> {
 		const { query, schema } = await this.githubRepository.ensure();
 		const currentUser = (await this.githubRepository.getAuthenticatedUser()).login;
 		try {
@@ -619,6 +659,7 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 			});
 			return data.node.reviews.nodes.length > 0 ? data.node.reviews.nodes[0].id : undefined;
 		} catch (error) {
+			if (throwOnError) { throw error; }
 			return;
 		}
 	}
@@ -867,8 +908,8 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 	/**
 	 * Check whether there is an existing pending review and update the context key to control what comment actions are shown.
 	 */
-	async validateDraftMode(): Promise<boolean> {
-		const inDraftMode = !!(await this.getPendingReviewId());
+	async validateDraftMode(throwOnError = false): Promise<boolean> {
+		const inDraftMode = !!(await this.getPendingReviewId(throwOnError));
 		if (inDraftMode !== this.hasPendingReview) {
 			this.hasPendingReview = inDraftMode;
 		}
@@ -1489,7 +1530,7 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 		return reviewThreads;
 	}
 
-	private async getRawReviewComments(): Promise<ReviewThread[]> {
+	private async getRawReviewComments(throwOnError = false): Promise<ReviewThread[]> {
 		Logger.debug(`Fetching review comments for PR #${this.number} - enter`, PullRequestModel.ID);
 
 		const { remote, query, schema } = await this.githubRepository.ensure();
@@ -1516,18 +1557,19 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 
 				hasNextPage = data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage;
 				after = data.repository.pullRequest.reviewThreads.pageInfo.endCursor;
-			} while (hasNextPage && reviewThreads.length < 1000);
+			} while (hasNextPage && (throwOnError || reviewThreads.length < 1000));
 			Logger.debug(`Fetching review comments for PR #${this.number} - exit`, PullRequestModel.ID);
 
 			return reviewThreads;
 		} catch (e) {
 			Logger.error(`Failed to get pull request review comments: ${e}`, PullRequestModel.ID);
+			if (throwOnError) { throw e; }
 			return [];
 		}
 	}
 
-	async getReviewThreads(): Promise<IReviewThread[]> {
-		const raw = await this.getRawReviewComments();
+	async getReviewThreads(throwOnError = false): Promise<IReviewThread[]> {
+		const raw = await this.getRawReviewComments(throwOnError);
 		return this.setReviewThreadCacheFromRaw(raw);
 	}
 
