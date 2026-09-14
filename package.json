@@ -1246,6 +1246,12 @@
 				"category": "%command.pull.request.category%"
 			},
 			{
+				"command": "stackPr.editTitle",
+				"title": "%command.stackPr.editTitle.title%",
+				"icon": "$(edit)",
+				"category": "%command.pull.request.category%"
+			},
+			{
 				"command": "stackPr.removeEntry",
 				"title": "%command.stackPr.removeEntry.title%",
 				"icon": "$(trash)",
@@ -3014,23 +3020,28 @@
 			],
 			"view/item/context": [
 				{
+					"command": "stackPr.editTitle",
+					"when": "view == stackPr:github && viewItem == stack-pull-request-entry:stack",
+					"group": "inline@0"
+				},
+				{
 					"command": "stackPr.refreshEntry",
-					"when": "view == stackPr:github && viewItem == stack-pull-request-entry",
+					"when": "view == stackPr:github && viewItem =~ /stack-pull-request-entry/",
 					"group": "inline@1"
 				},
 				{
 					"command": "stackPr.removeEntry",
-					"when": "view == stackPr:github && viewItem == stack-pull-request-entry",
+					"when": "view == stackPr:github && viewItem =~ /stack-pull-request-entry/",
 					"group": "inline@2"
 				},
 				{
 					"command": "stackPr.refreshEntry",
-					"when": "view == stackPr:github && viewItem == stack-pull-request-entry",
+					"when": "view == stackPr:github && viewItem =~ /stack-pull-request-entry/",
 					"group": "1_stack@1"
 				},
 				{
 					"command": "stackPr.removeEntry",
-					"when": "view == stackPr:github && viewItem == stack-pull-request-entry",
+					"when": "view == stackPr:github && viewItem =~ /stack-pull-request-entry/",
 					"group": "1_stack@2"
 				},
 				{
@@ -3872,6 +3883,16 @@
 			]
 		},
 		"colors": [
+			{
+				"id": "stackPullRequests.stackIcon",
+				"defaults": {
+					"dark": "#58A6FF",
+					"light": "#0969DA",
+					"highContrast": "#58A6FF",
+					"highContrastLight": "#0969DA"
+				},
+				"description": "The blue used for Stack Pull Requests group icons."
+			},
 			{
 				"id": "issues.newIssueDecoration",
 				"defaults": {

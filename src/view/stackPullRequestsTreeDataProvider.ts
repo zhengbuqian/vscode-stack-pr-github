@@ -6,8 +6,8 @@
 import * as vscode from 'vscode';
 import { registerStackContentProvider } from './inMemPRContentProvider';
 import { PrsTreeModel } from './prsTreeModel';
+import { StackDiffViewState } from './stackDiffViewState';
 import { StackPullRequestResolver } from './stackPullRequestResolver';
-import { GitChangeType } from '../common/file';
 import { Disposable, disposeAll } from '../common/lifecycle';
 import Logger from '../common/logger';
 import { Protocol } from '../common/protocol';
@@ -16,7 +16,7 @@ import { FolderRepositoryManager } from '../github/folderRepositoryManager';
 import { RepositoriesManager } from '../github/repositoriesManager';
 import { NotificationsManager } from '../notifications/notificationsManager';
 import { InMemFileChangeNode, RemoteFileChangeNode } from './treeNodes/fileChangeNode';
-import { StackPullRequestEntry, StackPullRequestEntryNode } from './treeNodes/stackPullRequestNode';
+import { StackPullRequestEntry, StackPullRequestEntryNode, StackPullRequestNode } from './treeNodes/stackPullRequestNode';
 import { BaseTreeNode, LabelOnlyNode, TreeNode } from './treeNodes/treeNode';
 import { TreeUtils } from './treeNodes/treeUtils';
 import { GitHubRepository } from '../github/githubRepository';
@@ -47,6 +47,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | void>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 	private readonly _view: vscode.TreeView<TreeNode>;
+	private readonly _diffViewState = this._register(new StackDiffViewState());
 	private _children: TreeNode[] = [];
 	private _loadPromise: Promise<TreeNode[]> | undefined;
 	private _generation = 0;
@@ -67,7 +68,8 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		}));
 		this._register(this._onDidChangeTreeData);
 		this._register(registerStackContentProvider(async uri => {
-			for (const node of await this.getChildren()) {
+			await this.getChildren();
+			for (const node of this._children) {
 				if (node instanceof StackPullRequestEntryNode && node.containsDocument(uri)) {
 					return node.readCachedContent(uri);
 				}
@@ -77,8 +79,9 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		this._register(this._view.onDidChangeCheckboxState(e => TreeUtils.processCheckboxUpdates(e, this._view.selection)));
 		this._register(vscode.commands.registerCommand('stackPr.refresh', () => this.refreshFromGitHub()));
 		this._register(vscode.commands.registerCommand('stackPr.add', () => this.addEntry()));
-		this._register(vscode.commands.registerCommand('stackPr.refreshEntry', (node: StackPullRequestEntryNode) => this.refreshEntry(node)));
-		this._register(vscode.commands.registerCommand('stackPr.removeEntry', (node: StackPullRequestEntryNode) => this.removeEntry(node)));
+		this._register(vscode.commands.registerCommand('stackPr.refreshEntry', (node: TreeNode) => this.refreshEntry(this.getEntryNode(node))));
+		this._register(vscode.commands.registerCommand('stackPr.removeEntry', (node: TreeNode) => this.removeEntry(this.getEntryNode(node))));
+		this._register(vscode.commands.registerCommand('stackPr.editTitle', (node: StackPullRequestEntryNode) => this.editTitle(node)));
 		this._register(vscode.commands.registerCommand(
 			StackPullRequestsTreeDataProvider.OPEN_FILE_DIFF_COMMAND,
 			(prNumber: number, fileName: string, command: vscode.Command) => this.openFileDiff(prNumber, fileName, command),
@@ -99,12 +102,12 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	}
 
 	get children(): readonly TreeNode[] {
-		return this._children;
+		return this._children.map(node => node instanceof StackPullRequestEntryNode ? node.getDisplayNode() : node);
 	}
 
 	refresh(treeNode?: TreeNode): void {
 		if (treeNode) {
-			this._onDidChangeTreeData.fire(treeNode);
+			this._onDidChangeTreeData.fire(treeNode instanceof StackPullRequestEntryNode ? treeNode.getDisplayNode() : treeNode);
 			return;
 		}
 		this._generation++;
@@ -120,7 +123,8 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 			location: { viewId: 'stackPr:github' },
 			title: vscode.l10n.t('Refreshing pull requests from GitHub'),
 		}, async () => {
-			const entries = (await this.getChildren()).filter((node): node is StackPullRequestEntryNode => node instanceof StackPullRequestEntryNode);
+			await this.getChildren();
+			const entries = this._children.filter((node): node is StackPullRequestEntryNode => node instanceof StackPullRequestEntryNode);
 			await Promise.all(entries.map(async node => {
 				try { await node.reload(); }
 				catch (e) { failures.push(`${node.entry.owner}/${node.entry.repositoryName} #${node.entry.pullRequestNumber}: ${e}`); }
@@ -145,15 +149,29 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 		if (!this._loadPromise) {
 			this._loadPromise = this.loadRoot();
 		}
-		return this._loadPromise;
+		const nodes = await this._loadPromise;
+		return nodes.map(node => node instanceof StackPullRequestEntryNode ? node.getDisplayNode() : node);
 	}
 
 	getParent(element: TreeNode): TreeNode | undefined {
-		return element.getParent();
+		const entry = this.getEntryNode(element);
+		return entry && entry.getDisplayNode() === element ? entry.getParent() : element.getParent();
 	}
 
-	getTreeItem(element: TreeNode): vscode.TreeItem | Promise<vscode.TreeItem> {
-		return element.getTreeItem();
+	private getEntryNode(node: TreeNode | undefined): StackPullRequestEntryNode | undefined {
+		if (node instanceof StackPullRequestEntryNode) { return node; }
+		return node instanceof StackPullRequestNode && node.parent instanceof StackPullRequestEntryNode
+			&& node.parent.getDisplayNode() === node ? node.parent : undefined;
+	}
+
+	async getTreeItem(element: TreeNode): Promise<vscode.TreeItem> {
+		const item = await element.getTreeItem();
+		const entry = this.getEntryNode(element);
+		if (entry && entry !== element) {
+			item.contextValue = `${item.contextValue}:stack-pull-request-entry`;
+			item.tooltip = entry.getTreeItem().tooltip;
+		}
+		return item;
 	}
 
 	async resolveTreeItem(item: vscode.TreeItem, element: TreeNode): Promise<vscode.TreeItem> {
@@ -161,10 +179,9 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 			return item;
 		}
 
-		await element.resolve();
-		const diffCommand = element instanceof InMemFileChangeNode && element.status === GitChangeType.ADD
-			? await element.getOpenDiffCommand()
-			: element.command;
+		const diffCommand = await element.getOpenDiffCommand(undefined, {
+			selection: undefined,
+		});
 		if (!diffCommand) {
 			Logger.error(`No diff command for PR #${element.pullRequest.number} file ${element.changeModel.fileName}`, StackPullRequestsTreeDataProvider.ID);
 			return element.getTreeItem();
@@ -185,7 +202,7 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 	private async openFileDiff(prNumber: number, fileName: string, command: vscode.Command): Promise<unknown> {
 		Logger.appendLine(`Opening PR #${prNumber} file ${fileName} with ${command.command}`, StackPullRequestsTreeDataProvider.ID);
 		try {
-			return await vscode.commands.executeCommand(command.command, ...(command.arguments ?? []));
+			return await this._diffViewState.open(command);
 		} catch (e) {
 			const message = e instanceof Error ? e.message : String(e);
 			Logger.error(`Opening PR #${prNumber} file ${fileName} failed: ${message}`, StackPullRequestsTreeDataProvider.ID);
@@ -343,7 +360,29 @@ export class StackPullRequestsTreeDataProvider extends Disposable implements vsc
 			void vscode.window.showInformationMessage(vscode.l10n.t('Stack Pull Requests refresh complete.'));
 		} catch (e) {
 			void vscode.window.showErrorMessage(vscode.l10n.t('Refresh failed. The previous cache was kept. {0}', String(e)));
-		} finally { this._onDidChangeTreeData.fire(node); }
+		} finally { this._onDidChangeTreeData.fire(); }
+	}
+
+	private async editTitle(node: StackPullRequestEntryNode | undefined): Promise<void> {
+		if (!(node instanceof StackPullRequestEntryNode) || !node.isStack) { return; }
+		const title = await vscode.window.showInputBox({
+			title: vscode.l10n.t('Edit Stack Title'),
+			prompt: vscode.l10n.t('Enter a custom title. Leave empty to clear it.'),
+			value: node.entry.customTitle ?? '',
+			ignoreFocusOut: true,
+		});
+		if (title === undefined) { return; }
+		try {
+			const entries = await this.getStoredEntries();
+			const entry = entries.find(entry => this.entryKey(entry) === this.entryKey(node.entry));
+			if (!entry) { return; }
+			entry.customTitle = title.trim() || undefined;
+			await this.storeEntries(entries);
+			node.entry.customTitle = entry.customTitle;
+			this._onDidChangeTreeData.fire(node);
+		} catch (e) {
+			void vscode.window.showErrorMessage(vscode.l10n.t('Failed to save stack title: {0}', String(e)));
+		}
 	}
 
 	private async removeEntry(node: StackPullRequestEntryNode | undefined): Promise<void> {

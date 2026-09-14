@@ -265,6 +265,7 @@
 	"command.stackPr.add.title": "Add Pull Request or Stack",
 	"command.stackPr.refresh.title": "Refresh Stack Pull Requests",
 	"command.stackPr.refreshEntry.title": "Refresh Pull Request or Stack",
+	"command.stackPr.editTitle.title": "Edit Stack Title",
 	"command.stackPr.removeEntry.title": "Remove from Stack Pull Requests",
 	"command.pr.setFileListLayoutAsTree.title": "View as Tree",
 	"command.pr.setFileListLayoutAsFlat.title": "View as List",

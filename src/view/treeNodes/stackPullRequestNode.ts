@@ -12,6 +12,7 @@ import Logger from '../../common/logger';
 import { fromPRUri } from '../../common/uri';
 import { FolderRepositoryManager } from '../../github/folderRepositoryManager';
 import { GitHubRepository } from '../../github/githubRepository';
+import { GithubItemStateEnum } from '../../github/interface';
 import { NotificationsManager } from '../../notifications/notificationsManager';
 import { PrsTreeModel } from '../prsTreeModel';
 import { StackPullRequestGraphNode, StackPullRequestResolver } from '../stackPullRequestResolver';
@@ -25,6 +26,7 @@ export interface StackPullRequestEntry {
 	owner: string;
 	repositoryName: string;
 	pullRequestNumber: number;
+	customTitle?: string;
 }
 
 function disposeTree(nodes: readonly TreeNode[]): void {
@@ -101,10 +103,17 @@ export class StackPullRequestEntryNode extends TreeNode implements vscode.TreeIt
 		this.label = vscode.l10n.t('Pull Request {0}/{1} #{2}', entry.owner, entry.repositoryName, entry.pullRequestNumber);
 	}
 
+	get isStack(): boolean { return this._isStack; }
+
+	getDisplayNode(): TreeNode {
+		const child = this._children?.[0];
+		return !this._isStack && this._children?.length === 1 && child instanceof StackPullRequestNode ? child : this;
+	}
+
 	getTreeItem(): vscode.TreeItem {
 		return {
 			id: this.id,
-			label: this.label,
+			label: `${this._isStack && this.entry.customTitle ? `${this.entry.customTitle} ` : ''}${this.label}`,
 			description: this._pullRequestCount === undefined
 				? undefined
 				: this._pullRequestCount === 1
@@ -114,8 +123,9 @@ export class StackPullRequestEntryNode extends TreeNode implements vscode.TreeIt
 				? vscode.l10n.t('Stack containing {0}/{1}#{2}', this.entry.owner, this.entry.repositoryName, this.entry.pullRequestNumber)
 				: vscode.l10n.t('Pull request {0}/{1}#{2}', this.entry.owner, this.entry.repositoryName, this.entry.pullRequestNumber)),
 			collapsibleState: this.collapsibleState,
-			contextValue: this.contextValue,
-			iconPath: new vscode.ThemeIcon(this._isStack ? 'layers' : 'git-pull-request'),
+			contextValue: this.contextValue + (this._isStack ? ':stack' : ''),
+			iconPath: new vscode.ThemeIcon(this._isStack ? 'layers' : 'git-pull-request',
+				this._isStack ? new vscode.ThemeColor('stackPullRequests.stackIcon') : undefined),
 		};
 	}
 
@@ -269,6 +279,19 @@ export class StackPullRequestEntryNode extends TreeNode implements vscode.TreeIt
 
 export class StackPullRequestNode extends PRNode {
 	private _loadPromise: Promise<TreeNode[]> | undefined;
+
+	override async getTreeItem(): Promise<vscode.TreeItem> {
+		const item = await super.getTreeItem();
+		const state = this.pullRequestModel.state;
+		item.iconPath = state === GithubItemStateEnum.Merged
+			? new vscode.ThemeIcon('git-merge', new vscode.ThemeColor('pullRequests.merged'))
+			: state === GithubItemStateEnum.Closed
+				? new vscode.ThemeIcon('git-pull-request-closed', new vscode.ThemeColor('pullRequests.closed'))
+				: this.pullRequestModel.isDraft
+					? new vscode.ThemeIcon('git-pull-request-draft', new vscode.ThemeColor('pullRequests.draft'))
+					: new vscode.ThemeIcon('git-pull-request', new vscode.ThemeColor('pullRequests.open'));
+		return item;
+	}
 
 	constructor(
 		parent: TreeNodeParent,
